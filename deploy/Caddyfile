@@ -3,6 +3,7 @@
 
   handle_path /bundles/* {
     root * /srv/bundles
+    header Access-Control-Allow-Origin *
     file_server
   }
 
