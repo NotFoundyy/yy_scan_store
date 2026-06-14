@@ -8,7 +8,7 @@ import { createSession, createShareToken, hashPassword, requireAdmin, requireAut
 import { db, rawPool } from './db.js';
 import { boxes, items, loginLogs, movements, sessions, syncOperations, users } from './schema.js';
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, trustProxy: true });
 await app.register(cors, { origin: process.env.CORS_ORIGIN === '*' ? true : process.env.CORS_ORIGIN });
 await app.register(jwt, { secret: process.env.JWT_SECRET! });
 
@@ -22,6 +22,7 @@ const boxInput = z.object({
   code: z.string().min(1).max(100).optional(),
   note: z.string().optional(),
   imageDataUrl: z.string().optional(),
+  archived: z.boolean().optional(),
   createdAt: z.string().optional(),
 });
 const itemInput = z.object({
