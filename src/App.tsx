@@ -232,7 +232,7 @@ function AuthPage({ navigate, showToast }: { navigate: (route: Route) => void; s
   return (
     <main className="auth-page">
       <section className="auth-card">
-        <div className="auth-brand"><Boxes size={30} /></div>
+        <div className="auth-brand"><Boxes size={38} /></div>
         <div className="auth-heading">
           <h1>老于智慧仓管</h1>
           <p>登录后，多台设备共享同一份箱子数据</p>
@@ -1407,12 +1407,16 @@ function ProfilePanel({
     <div className="profile-page">
       <div className="profile-hero">
         <span className="profile-avatar large">{session.user.username.slice(0, 1).toUpperCase()}</span>
-        <div><strong>{session.user.username}</strong><small>账号数据已启用云端同步</small></div>
+        <div>
+          <strong>{session.user.username}</strong>
+          <small>{online ? '云端同步已连接' : '当前离线，联网后自动同步'}</small>
+        </div>
+        <span className={`sync-dot ${online ? 'online' : 'offline'}`} style={{ flexShrink: 0 }} />
       </div>
       <div className="sync-overview">
-        <div><span className={`sync-dot ${online ? 'online' : 'offline'}`} /><strong>{online ? '在线' : '离线'}</strong><small>服务器连接</small></div>
+        <div><strong className={online ? 'profile-stat-online' : 'profile-stat-offline'}>{online ? '在线' : '离线'}</strong><small>服务器连接</small></div>
         <div><strong>{syncStatus.queued}</strong><small>待同步操作</small></div>
-        <div><strong>{syncStatus.conflicts}</strong><small>同步冲突</small></div>
+        <div><strong className={syncStatus.conflicts > 0 ? 'warning-text' : ''}>{syncStatus.conflicts}</strong><small>同步冲突</small></div>
       </div>
       <form
         className="tool-section profile-form"
