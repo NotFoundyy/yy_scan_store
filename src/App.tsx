@@ -268,7 +268,8 @@ function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (
   return (
     <div className="admin-page">
       <header className="admin-header">
-        <div>
+        <div className="admin-header-icon"><Boxes size={20} /></div>
+        <div className="admin-header-text">
           <h1>管理员后台</h1>
           <p>老于智慧仓管</p>
         </div>
@@ -278,51 +279,67 @@ function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (
             try { await api.post('/auth/logout', { refreshToken: session.refreshToken }); } catch { /* ignore */ }
             setSession(undefined);
           }}
-        >退出</button>
+        >退出登录</button>
       </header>
 
-      <div className="admin-tabs">
-        <button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')}>用户管理</button>
-        <button className={tab === 'logs' ? 'active' : ''} onClick={() => setTab('logs')}>登录日志</button>
+      <div className="admin-tab-bar">
+        <div className="admin-tab-control">
+          <button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')}>用户管理</button>
+          <button className={tab === 'logs' ? 'active' : ''} onClick={() => setTab('logs')}>登录日志</button>
+        </div>
       </div>
 
-      {loading && <div className="admin-state">加载中...</div>}
+      {loading && (
+        <div className="admin-state">
+          <div className="admin-state-dot" />
+          加载中...
+        </div>
+      )}
 
       {!loading && tab === 'users' && (
         <div className="admin-list">
-          {userList.length === 0 && <div className="admin-state">暂无用户</div>}
-          {userList.map((u) => (
-            <div key={u.id} className="admin-row">
-              <div>
-                <strong>{u.username}</strong>
-                <small>注册于 {new Date(u.createdAt).toLocaleDateString('zh-CN')}</small>
+          {userList.length === 0
+            ? <div className="admin-empty"><span>暂无普通用户</span></div>
+            : userList.map((u) => (
+              <div key={u.id} className="admin-row">
+                <span className="admin-avatar">{u.username.slice(0, 1).toUpperCase()}</span>
+                <div className="admin-row-info">
+                  <strong>{u.username}</strong>
+                  <small>注册于 {new Date(u.createdAt).toLocaleDateString('zh-CN')}</small>
+                </div>
+                <button className="admin-action" onClick={() => { setResetTarget(u); setNewPwd(''); }}>重置密码</button>
               </div>
-              <button className="admin-action" onClick={() => { setResetTarget(u); setNewPwd(''); }}>重置密码</button>
-            </div>
-          ))}
+            ))
+          }
         </div>
       )}
 
       {!loading && tab === 'logs' && (
         <div className="admin-list">
-          {logs.length === 0 && <div className="admin-state">暂无日志</div>}
-          {logs.map((log) => (
-            <div key={log.id} className={`admin-row ${log.success ? '' : 'admin-row-fail'}`}>
-              <div>
-                <strong>{log.username}</strong>
-                <small>{new Date(log.createdAt).toLocaleString('zh-CN')} · {log.ip ?? '—'}</small>
+          {logs.length === 0
+            ? <div className="admin-empty"><span>暂无登录记录</span></div>
+            : logs.map((log) => (
+              <div key={log.id} className="admin-row">
+                <span className={`admin-log-dot ${log.success ? 'success' : 'fail'}`} />
+                <div className="admin-row-info">
+                  <strong>{log.username}</strong>
+                  <small>{new Date(log.createdAt).toLocaleString('zh-CN')} · {log.ip ?? '—'}</small>
+                </div>
+                <span className={`admin-badge ${log.success ? 'success' : 'fail'}`}>{log.success ? '成功' : '失败'}</span>
               </div>
-              <span className={`admin-badge ${log.success ? 'success' : 'fail'}`}>{log.success ? '成功' : '失败'}</span>
-            </div>
-          ))}
+            ))
+          }
         </div>
       )}
 
       {resetTarget && (
         <div className="admin-modal-backdrop" onClick={() => setResetTarget(undefined)}>
           <div className="admin-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="admin-modal-icon">
+              <span>{resetTarget.username.slice(0, 1).toUpperCase()}</span>
+            </div>
             <h2>重置密码</h2>
-            <p>账号：<strong>{resetTarget.username}</strong></p>
+            <p>为账号 <strong>{resetTarget.username}</strong> 设置新密码，重置后该账号所有在线设备将被踢下线。</p>
             <input
               className="admin-input"
               type="password"
