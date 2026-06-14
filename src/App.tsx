@@ -40,7 +40,7 @@ import { Capacitor } from '@capacitor/core';
 import { CapacitorUpdater } from '@capgo/capacitor-updater';
 import { api, apiBase, hasApiConfiguration } from './lib/api';
 import { getLocalDataOwner, getSession, onSessionChange, setSession } from './lib/auth';
-import { clearLocalAccountData, createShareQrValue, getSharedBox, getSyncStatus, invalidateCloudData, parseShareQrValue } from './lib/cloud';
+import { clearLocalAccountData, cloudEnabled, createShareQrValue, getSharedBox, getSyncStatus, invalidateCloudData, parseShareQrValue } from './lib/cloud';
 import { getDatabaseSnapshot } from './lib/db';
 
 type Route =
@@ -106,6 +106,10 @@ export function App() {
     Capacitor.isNativePlatform() ? (localStorage.getItem('app-last-version') ?? '') : ''
   );
   const [updateInfo, setUpdateInfo] = useState<{ version: string; changelog?: string } | undefined>();
+  const [lastSyncTime, setLastSyncTime] = useState<Date | undefined>(() => {
+    const s = localStorage.getItem('last-sync-time');
+    return s ? new Date(s) : undefined;
+  });
   const lowStockThreshold = DEFAULT_LOW_STOCK_THRESHOLD;
 
   const showToast = (next: Toast) => {
@@ -166,6 +170,11 @@ export function App() {
     setItems(itemRows);
     setMovements(movementRows);
     setSyncStatus(await getSyncStatus());
+    if (cloudEnabled()) {
+      const now = new Date();
+      setLastSyncTime(now);
+      localStorage.setItem('last-sync-time', now.toISOString());
+    }
     setLoading(false);
   };
 
@@ -247,6 +256,7 @@ export function App() {
             showToast={showToast}
             lowStockThreshold={lowStockThreshold}
             online={online}
+            lastSyncTime={lastSyncTime}
           />
         )}
         {!loading && route.name === 'boxes' && (
@@ -646,6 +656,7 @@ function HomePage({
   showToast,
   lowStockThreshold,
   online,
+  lastSyncTime,
 }: {
   boxes: Box[];
   items: Item[];
@@ -655,6 +666,7 @@ function HomePage({
   showToast: (toast: Toast) => void;
   lowStockThreshold: number;
   online: boolean;
+  lastSyncTime?: Date;
 }) {
   const [creating, setCreating] = useState(false);
   const lowStockCount = items.filter((item) => isLowStock(item, lowStockThreshold)).length;
@@ -678,7 +690,11 @@ function HomePage({
           <h1>老于智慧仓管</h1>
           <p className={`home-sync ${online ? 'online' : 'offline'}`}>
             <span />
-            {formatDateOnly(new Date().toISOString())} · {online ? '云端数据已同步' : '离线使用，联网后自动同步'}
+            {online
+              ? lastSyncTime
+                ? `${formatDateOnly(lastSyncTime.toISOString())} ${lastSyncTime.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })} 已同步`
+                : '正在同步...'
+              : '离线使用，联网后自动同步'}
           </p>
         </div>
       </header>
