@@ -98,14 +98,16 @@ export function App() {
   const [movements, setMovements] = useState<StockMovement[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<Toast>();
+  const toastTimerRef = useRef<number | undefined>(undefined);
   const [session, setAuthSession] = useState<AuthSession | undefined>(getSession);
   const [syncStatus, setSyncStatus] = useState({ queued: 0, conflicts: 0 });
   const [online, setOnline] = useState(navigator.onLine);
   const lowStockThreshold = DEFAULT_LOW_STOCK_THRESHOLD;
 
   const showToast = (next: Toast) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast(next);
-    window.setTimeout(() => setToast(undefined), 1800);
+    toastTimerRef.current = window.setTimeout(() => setToast(undefined), 1800);
   };
 
   const loadAll = async () => {
@@ -595,17 +597,27 @@ function BoxListPage({
   const [query, setQuery] = useState('');
   const [creating, setCreating] = useState(false);
   const [statusFilter, setStatusFilter] = useState<'all' | 'low' | 'normal'>('all');
+  const itemsByBox = useMemo(() => {
+    const map = new Map<string, Item[]>();
+    for (const item of items) {
+      const list = map.get(item.boxId);
+      if (list) list.push(item);
+      else map.set(item.boxId, [item]);
+    }
+    return map;
+  }, [items]);
+
   const filtered = useMemo(() => {
     const text = query.trim().toLowerCase();
     const rows = boxes.filter((box) => {
-      const boxItems = items.filter((item) => item.boxId === box.id);
+      const boxItems = itemsByBox.get(box.id) ?? [];
       const low = boxItems.some((item) => isLowStock(item, lowStockThreshold));
       const textMatched = !text || `${box.name} ${box.code} ${box.note ?? ''}`.toLowerCase().includes(text);
       const statusMatched = statusFilter === 'all' || (statusFilter === 'low' ? low : !low);
       return textMatched && statusMatched;
     });
     return rows.sort((a, b) => naturalNameCompare(a.name, b.name));
-  }, [boxes, items, lowStockThreshold, query, statusFilter]);
+  }, [boxes, itemsByBox, lowStockThreshold, query, statusFilter]);
 
   const handleCreate = async (input: { name: string; note?: string; imageDataUrl?: string }) => {
     const box = await createBox(input);
@@ -650,7 +662,7 @@ function BoxListPage({
       ) : (
         <div className="card-list">
           {filtered.map((box) => {
-            const boxItems = items.filter((item) => item.boxId === box.id);
+            const boxItems = itemsByBox.get(box.id) ?? [];
             const hasLowStock = boxItems.some((item) => isLowStock(item, lowStockThreshold));
             return (
               <div
@@ -1402,6 +1414,10 @@ function ProfilePanel({
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setUsername(session.user.username);
+  }, [session.user.username]);
 
   return (
     <div className="profile-page">

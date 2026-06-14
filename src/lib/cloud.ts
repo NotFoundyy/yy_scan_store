@@ -22,6 +22,7 @@ export const clearLocalAccountData = async () => {
 
 export const getCloudData = async (force = false) => {
   if (!force && cache) return cache;
+  if (force) pending = undefined;
   pending ??= flushSyncQueue().then(() => api.get<CloudData>('/data')).then(async (data) => {
     cache = data;
     await replaceDatabase(data);
