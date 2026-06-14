@@ -25,13 +25,16 @@ Write-Host "==> Uploading to server ..."
 scp $ZipPath "${Server}:${RemoteDir}/latest.zip"
 
 Write-Host "==> Updating version.json ..."
-if ($Changelog) {
-    $escaped = $Changelog -replace '"', '\"' -replace "'", "'\''"
-    $json = "{""version"":""$Version"",""url"":""$BundleUrl"",""changelog"":""$escaped""}"
+$obj = if ($Changelog) {
+    [ordered]@{ version = $Version; url = $BundleUrl; changelog = $Changelog }
 } else {
-    $json = "{""version"":""$Version"",""url"":""$BundleUrl""}"
+    [ordered]@{ version = $Version; url = $BundleUrl }
 }
-ssh $Server "echo '$json' > $RemoteDir/version.json"
+$jsonStr = $obj | ConvertTo-Json -Compress
+$tmpJson = Join-Path $PSScriptRoot "bundle-version.json"
+[System.IO.File]::WriteAllText($tmpJson, $jsonStr, (New-Object System.Text.UTF8Encoding $false))
+scp $tmpJson "${Server}:${RemoteDir}/version.json"
+Remove-Item $tmpJson
 
 Remove-Item $ZipPath
 Write-Host "==> Done! v$Version deployed."
