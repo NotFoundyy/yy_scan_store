@@ -261,6 +261,7 @@ function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (
   const [resetTarget, setResetTarget] = useState<AdminUser | undefined>();
   const [newPwd, setNewPwd] = useState('');
   const [resetting, setResetting] = useState(false);
+  const [logDetail, setLogDetail] = useState<LoginLog | undefined>();
 
   useEffect(() => {
     setLoading(true);
@@ -340,11 +341,13 @@ function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (
           {logs.length === 0
             ? <div className="admin-empty"><span>暂无登录记录</span></div>
             : logs.map((log) => (
-              <div key={log.id} className="admin-row">
-                <span className={`admin-log-dot ${log.success ? 'success' : 'fail'}`} />
+              <div key={log.id} className="admin-row admin-row-clickable" onClick={() => setLogDetail(log)}>
+                <span className={`admin-avatar ${log.success ? 'success' : 'fail'}`}>
+                  {log.username.slice(0, 1).toUpperCase()}
+                </span>
                 <div className="admin-row-info">
                   <strong>{log.username}</strong>
-                  <small>{new Date(log.createdAt).toLocaleString('zh-CN')} · {log.ip ?? '—'}</small>
+                  <small>{new Date(log.createdAt).toLocaleString('zh-CN')} · {log.ip ?? '未知 IP'}</small>
                 </div>
                 <span className={`admin-badge ${log.success ? 'success' : 'fail'}`}>{log.success ? '成功' : '失败'}</span>
               </div>
@@ -375,6 +378,40 @@ function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (
                 {resetting ? '提交中...' : '确认重置'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {logDetail && (
+        <div className="admin-modal-backdrop" onClick={() => setLogDetail(undefined)}>
+          <div className="admin-modal" onClick={(e) => e.stopPropagation()}>
+            <div className={`admin-modal-icon ${logDetail.success ? 'success' : 'fail'}`}>
+              {logDetail.username.slice(0, 1).toUpperCase()}
+            </div>
+            <h2>{logDetail.success ? '登录成功' : '登录失败'}</h2>
+            <div className="admin-log-detail">
+              <div className="admin-log-detail-row">
+                <span>账号</span>
+                <strong>{logDetail.username}</strong>
+              </div>
+              <div className="admin-log-detail-row">
+                <span>时间</span>
+                <strong>{new Date(logDetail.createdAt).toLocaleString('zh-CN', { hour12: false })}</strong>
+              </div>
+              <div className="admin-log-detail-row">
+                <span>IP 地址</span>
+                <strong>{logDetail.ip ?? '未记录'}</strong>
+              </div>
+              <div className="admin-log-detail-row">
+                <span>结果</span>
+                <span className={`admin-badge ${logDetail.success ? 'success' : 'fail'}`}>
+                  {logDetail.success ? '登录成功' : '登录失败'}
+                </span>
+              </div>
+            </div>
+            <button className="admin-confirm admin-confirm-full" onClick={() => setLogDetail(undefined)}>
+              关闭
+            </button>
           </div>
         </div>
       )}
