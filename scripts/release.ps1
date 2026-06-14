@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $Server    = "root@101.132.61.21"
-$RemoteDir = "~/store_scan/bundles"
+$RemoteDir = "~/yy_scan_store/bundles"
 $BundleUrl = "http://101.132.61.21/bundles/latest.zip"
 $ZipPath   = "bundle-$Version.zip"
 
