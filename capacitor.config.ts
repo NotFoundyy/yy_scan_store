@@ -5,8 +5,13 @@ const config: CapacitorConfig = {
   appName: '老于智慧仓管',
   webDir: 'dist',
   server: {
-    androidScheme: 'http'
-  }
+    androidScheme: 'http',
+  },
+  plugins: {
+    CapacitorUpdater: {
+      autoUpdate: false,
+    },
+  },
 };
 
 export default config;

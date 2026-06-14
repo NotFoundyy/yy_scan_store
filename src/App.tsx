@@ -36,7 +36,9 @@ import { archiveBox, createBox, deleteBox, getBox, getBoxByCode, listBoxes, upda
 import { importBoxesWithItems } from './repositories/importBoxes';
 import { changeStock, createItem, deleteItem, listAllItems, listItemsByBox, updateItem } from './repositories/items';
 import { excludeOutboundMovementsFromExcelByTeams, listAllMovements, updateStockMovement } from './repositories/movements';
-import { api, hasApiConfiguration } from './lib/api';
+import { Capacitor } from '@capacitor/core';
+import { CapacitorUpdater } from '@capgo/capacitor-updater';
+import { api, apiBase, hasApiConfiguration } from './lib/api';
 import { getLocalDataOwner, getSession, onSessionChange, setSession } from './lib/auth';
 import { clearLocalAccountData, createShareQrValue, getSharedBox, getSyncStatus, invalidateCloudData, parseShareQrValue } from './lib/cloud';
 import { getDatabaseSnapshot } from './lib/db';
@@ -107,6 +109,25 @@ export function App() {
     setToast(next);
     toastTimerRef.current = window.setTimeout(() => setToast(undefined), 1800);
   };
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !apiBase) return;
+    (async () => {
+      try {
+        const { bundle: current } = await CapacitorUpdater.current();
+        const res = await fetch(`${apiBase}/bundles/version.json`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const { version, url } = await res.json() as { version: string; url?: string };
+        if (!url || !version || version === '0.0.0' || version === current.version) return;
+        showToast({ type: 'success', message: `发现新版本 ${version}，正在更新...` });
+        const bundle = await CapacitorUpdater.download({ url, version });
+        await CapacitorUpdater.set(bundle);
+      } catch {
+        // 静默忽略更新错误，不影响主流程
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const loadAll = async () => {
     setLoading(true);

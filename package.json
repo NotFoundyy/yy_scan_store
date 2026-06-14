@@ -24,6 +24,7 @@
     "@capacitor/core": "^8.4.0",
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/share": "^8.0.1",
+    "@capgo/capacitor-updater": "^8.49.1",
     "@zxing/browser": "^0.1.5",
     "idb": "^8.0.3",
     "lucide-react": "^1.18.0",

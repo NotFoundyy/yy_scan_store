@@ -1,7 +1,7 @@
 import type { AuthSession } from './auth';
 import { getSession, setSession } from './auth';
 
-const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
+export const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
 
 export class ApiError extends Error {
   readonly status: number;

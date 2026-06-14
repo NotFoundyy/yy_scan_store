@@ -1,4 +1,12 @@
 {$API_DOMAIN} {
   encode gzip
-  reverse_proxy api:3000
+
+  handle_path /bundles/* {
+    root * /srv/bundles
+    file_server
+  }
+
+  handle {
+    reverse_proxy api:3000
+  }
 }

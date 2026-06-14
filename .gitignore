@@ -15,6 +15,7 @@ dist-ssr
 server/.env
 backups/
 tools/
+bundles/*.zip
 
 # Android generated and machine-local files
 android/.gradle/
