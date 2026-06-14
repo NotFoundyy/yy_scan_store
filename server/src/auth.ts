@@ -15,7 +15,8 @@ declare module '@fastify/jwt' {
 
 export const sha256 = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 export const createShareToken = () => crypto.randomBytes(32).toString('base64url');
-export const hashPassword = (password: string) => argon2.hash(password, { type: argon2.argon2id });
+const argon2Params = { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 };
+export const hashPassword = (password: string) => argon2.hash(password, argon2Params);
 export const verifyPassword = (hash: string, password: string) => argon2.verify(hash, password);
 
 export const createSession = async (app: FastifyInstance, user: AuthUser) => {

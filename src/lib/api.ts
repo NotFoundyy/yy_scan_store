@@ -15,7 +15,7 @@ export class ApiError extends Error {
 const request = async <T>(path: string, init: RequestInit = {}, retry = true): Promise<T> => {
   const session = getSession();
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 12000);
+  const timeout = window.setTimeout(() => controller.abort(), 25000);
   let response: Response;
   try {
     const hasBody = init.body !== undefined && init.body !== null;
@@ -29,7 +29,7 @@ const request = async <T>(path: string, init: RequestInit = {}, retry = true): P
       },
     });
   } catch (error) {
-    throw new ApiError(error instanceof DOMException && error.name === 'AbortError' ? '服务器响应超时' : '无法连接服务器，请检查网络', 0);
+    throw new ApiError(controller.signal.aborted ? '服务器响应超时' : '无法连接服务器，请检查网络', 0);
   } finally {
     window.clearTimeout(timeout);
   }
