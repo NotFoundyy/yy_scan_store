@@ -1,0 +1,41 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: store_scan
+      POSTGRES_USER: store_scan
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./server/sql:/docker-entrypoint-initdb.d:ro
+
+  api:
+    build: ./server
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://store_scan:${POSTGRES_PASSWORD}@postgres:5432/store_scan
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGIN: "*"
+    depends_on:
+      - postgres
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      API_DOMAIN: ${API_DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

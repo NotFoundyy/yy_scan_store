@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">老于智慧仓管</string>
+    <string name="title_activity_main">老于智慧仓管</string>
+    <string name="package_name">com.local.storescan</string>
+    <string name="custom_url_scheme">com.local.storescan</string>
+</resources>
