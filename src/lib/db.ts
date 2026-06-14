@@ -91,3 +91,16 @@ export const replaceDatabase = async (data: {
   ]);
   await tx.done;
 };
+
+export const clearAccountDatabase = async () => {
+  const db = await getDb();
+  const tx = db.transaction(['boxes', 'items', 'movements', 'syncQueue', 'syncConflicts'], 'readwrite');
+  await Promise.all([
+    tx.objectStore('boxes').clear(),
+    tx.objectStore('items').clear(),
+    tx.objectStore('movements').clear(),
+    tx.objectStore('syncQueue').clear(),
+    tx.objectStore('syncConflicts').clear(),
+  ]);
+  await tx.done;
+};

@@ -1246,6 +1246,30 @@ button:disabled {
   letter-spacing: 0;
 }
 
+.sync-required-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid #ffe7ba;
+  border-radius: 14px;
+  color: #ad6800;
+  background: #fffbe6;
+}
+
+.sync-required-card p {
+  margin: 5px 0 0;
+  color: #8c6d1f;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.sync-required-card button {
+  grid-column: 1 / -1;
+}
+
 .scan-page .page-header {
   margin-bottom: 16px;
 }

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "smoke:api": "node scripts/smoke-api.mjs"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.6",

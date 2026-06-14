@@ -41,8 +41,9 @@ const request = async <T>(path: string, init: RequestInit = {}, retry = true): P
       }, false);
       setSession(refreshed);
       return request<T>(path, init, false);
-    } catch {
-      setSession(undefined);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) setSession(undefined);
+      throw error;
     }
   }
   if (!response.ok) {

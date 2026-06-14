@@ -8,6 +8,7 @@ import {
   Camera,
   ChevronLeft,
   ChevronRight,
+  CloudOff,
   Download,
   Edit3,
   FileDown,
@@ -39,7 +40,7 @@ import { changeStock, createItem, deleteItem, listAllItems, listItemsByBox, upda
 import { excludeOutboundMovementsFromExcelByTeams, listAllMovements, updateStockMovement } from './repositories/movements';
 import { api, hasApiConfiguration } from './lib/api';
 import { getLocalDataOwner, getSession, onSessionChange, setSession } from './lib/auth';
-import { createShareQrValue, getSharedBox, getSyncStatus, invalidateCloudData, parseShareQrValue } from './lib/cloud';
+import { clearLocalAccountData, createShareQrValue, getSharedBox, getSyncStatus, invalidateCloudData, parseShareQrValue } from './lib/cloud';
 import { getDatabaseSnapshot } from './lib/db';
 
 type Route =
@@ -133,9 +134,11 @@ export function App() {
   }, []);
 
   useEffect(() => onSessionChange(() => {
-    setAuthSession(getSession());
+    const nextSession = getSession();
+    setAuthSession(nextSession);
     invalidateCloudData();
-    loadAll().catch((error) => showToast({ type: 'error', message: error.message }));
+    const prepare = nextSession ? Promise.resolve() : clearLocalAccountData();
+    prepare.then(loadAll).catch((error) => showToast({ type: 'error', message: error.message }));
   }), []);
 
   useEffect(() => {
@@ -195,7 +198,7 @@ export function App() {
           />
         )}
         {!loading && route.name === 'qr' && (
-          <QrPage box={currentBox} navigate={navigate} showToast={showToast} />
+          <QrPage box={currentBox} navigate={navigate} showToast={showToast} refresh={loadAll} online={online} />
         )}
         {!loading && route.name === 'scan' && <ScanPage navigate={navigate} showToast={showToast} />}
         {!loading && route.name === 'shared' && <SharedBoxPage id={route.id} token={route.token} navigate={navigate} showToast={showToast} />}
@@ -223,8 +226,8 @@ function AuthPage({ navigate, showToast }: { navigate: (route: Route) => void; s
   const [password, setPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const validUsername = /^[A-Za-z0-9_]{4,32}$/.test(username);
-  const validPassword = password.length >= 8 && password.length <= 128;
+  const validUsername = /^[A-Za-z0-9_]{2,32}$/.test(username);
+  const validPassword = password.length >= 6 && password.length <= 128;
 
   return (
     <main className="auth-page">
@@ -244,22 +247,29 @@ function AuthPage({ navigate, showToast }: { navigate: (route: Route) => void; s
             event.preventDefault();
             setError('');
             if (!validUsername) {
-              setError('账号需要 4-32 位，只能使用字母、数字或下划线');
+              setError('账号需要 2-32 位，只能使用字母、数字或下划线');
               return;
             }
             if (!validPassword) {
-              setError('密码需要 8-128 位');
+              setError('密码需要 6-128 位');
               return;
             }
             setSaving(true);
             try {
               const snapshot = await getDatabaseSnapshot();
-              const legacyData = !getLocalDataOwner() && snapshot.boxes.length > 0;
+              const localOwner = getLocalDataOwner();
+              const legacyData = !localOwner && snapshot.boxes.length > 0;
               const nextSession = await api.post<AuthSession>(`/auth/${mode}`, { username, password });
               setSession(nextSession, false);
-              if (legacyData && confirm(`检测到本机有 ${snapshot.boxes.length} 个旧版箱子，是否上传到当前账号？`)) {
-                await api.post('/import', snapshot);
-                invalidateCloudData();
+              if (localOwner && localOwner !== nextSession.user.id) {
+                await clearLocalAccountData();
+              } else if (legacyData) {
+                if (confirm(`检测到本机有 ${snapshot.boxes.length} 个旧版箱子，是否上传到当前账号？`)) {
+                  await api.post('/import', snapshot);
+                  invalidateCloudData();
+                } else {
+                  await clearLocalAccountData();
+                }
               }
               setSession(nextSession);
               showToast({ type: 'success', message: mode === 'login' ? '登录成功' : '注册成功' });
@@ -279,7 +289,7 @@ function AuthPage({ navigate, showToast }: { navigate: (route: Route) => void; s
           </label>
           <label className="auth-field">
             <LockKeyhole size={20} />
-            <input autoComplete={mode === 'login' ? 'current-password' : 'new-password'} type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码（至少 8 位）" />
+            <input autoComplete={mode === 'login' ? 'current-password' : 'new-password'} type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码（至少 6 位）" />
           </label>
           {error && <p className="auth-error">{error}</p>}
           <button className="primary full" disabled={saving || !hasApiConfiguration()}>
@@ -920,12 +930,27 @@ function BoxDetailPage({
   );
 }
 
-function QrPage({ box, navigate, showToast }: { box?: Box; navigate: (route: Route) => void; showToast: (toast: Toast) => void }) {
+function QrPage({
+  box,
+  navigate,
+  showToast,
+  refresh,
+  online,
+}: {
+  box?: Box;
+  navigate: (route: Route) => void;
+  showToast: (toast: Toast) => void;
+  refresh: () => Promise<void>;
+  online: boolean;
+}) {
   const [dataUrl, setDataUrl] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!box) return;
+    if (!box?.shareToken) {
+      setDataUrl('');
+      return;
+    }
     createQrDataUrl(createShareQrValue(box))
       .then(setDataUrl)
       .catch((error) => showToast({ type: 'error', message: error.message }));
@@ -943,6 +968,7 @@ function QrPage({ box, navigate, showToast }: { box?: Box; navigate: (route: Rou
   const saveQrImage = async () => {
     if (!dataUrl) return;
     const safeName = `${box.code}-${box.name}.png`.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '').trim() || `${box.code}.png`;
+    if (!box.shareToken) throw new Error('箱子尚未同步，暂时不能分享二维码');
     const labeledDataUrl = await createQrLabelDataUrl({ code: createShareQrValue(box), boxName: box.name });
 
     if (isNativeApp()) {
@@ -982,14 +1008,27 @@ function QrPage({ box, navigate, showToast }: { box?: Box; navigate: (route: Rou
   return (
     <section>
       <PageHeader title="箱子二维码" subtitle={box.name} back={() => navigate({ name: 'box', id: box.id })} />
+      {!box.shareToken && (
+        <div className="sync-required-card">
+          <CloudOff size={24} />
+          <div><strong>分享二维码尚未生成</strong><p>这个箱子还没有同步到服务器。联网同步后，二维码将固定不变并可供他人只读查看。</p></div>
+          <button
+            className="primary"
+            disabled={!online}
+            onClick={() => refresh().catch((error) => showToast({ type: 'error', message: error.message }))}
+          >
+            立即同步
+          </button>
+        </div>
+      )}
       <div className="qr-card">
-        {dataUrl ? <img src={dataUrl} alt={`${box.name} 二维码`} /> : <div className="state-block">正在生成二维码...</div>}
+        {dataUrl ? <img src={dataUrl} alt={`${box.name} 二维码`} /> : <div className="state-block">{box.shareToken ? '正在生成二维码...' : '等待云端同步'}</div>}
         <strong>{displayBoxCode(box.code)}</strong>
         <span>{box.name}</span>
       </div>
       <button
         className="primary full"
-        disabled={!dataUrl || saving}
+        disabled={!box.shareToken || !dataUrl || saving}
         onClick={() => saveQrImage().catch((error) => showToast({ type: 'error', message: error.message }))}
       >
         <Download size={18} />
@@ -1034,7 +1073,7 @@ function ScanPage({ navigate, showToast }: { navigate: (route: Route) => void; s
     const start = async () => {
       try {
         if (!videoRef.current) return;
-        if (!window.isSecureContext) {
+        if (!isNativeApp() && !window.isSecureContext) {
           setStatus('相机不可用，可上传图片或输入箱码。');
           return;
         }
@@ -1383,6 +1422,14 @@ function ProfilePanel({
             showToast({ type: 'error', message: '请输入当前密码确认修改' });
             return;
           }
+          if (!/^[A-Za-z0-9_]{2,32}$/.test(username)) {
+            showToast({ type: 'error', message: '账号需要 2-32 位，只能使用字母、数字或下划线' });
+            return;
+          }
+          if (currentPassword.length < 6 || (newPassword && newPassword.length < 6)) {
+            showToast({ type: 'error', message: '密码至少需要 6 位' });
+            return;
+          }
           setSaving(true);
           try {
             const next = await api.patch<AuthSession>('/auth/profile', {
@@ -1407,7 +1454,20 @@ function ProfilePanel({
         <label className="field">新密码（不修改可留空）<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
         <button className="primary full" disabled={saving || !online}>{saving ? '保存中...' : '保存修改'}</button>
       </form>
-      <button className="danger full profile-logout" onClick={() => setSession(undefined)}>退出登录</button>
+      <button
+        className="danger full profile-logout"
+        onClick={async () => {
+          if (syncStatus.queued > 0 && !confirm(`还有 ${syncStatus.queued} 条操作尚未同步，退出后会丢弃。仍要退出吗？`)) return;
+          try {
+            await api.post('/auth/logout', { refreshToken: session.refreshToken });
+          } catch {
+            // Local logout must still work when the server is unavailable.
+          }
+          setSession(undefined);
+        }}
+      >
+        退出登录
+      </button>
     </div>
   );
 }

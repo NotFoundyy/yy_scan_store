@@ -13,8 +13,8 @@ await app.register(cors, { origin: process.env.CORS_ORIGIN === '*' ? true : proc
 await app.register(jwt, { secret: process.env.JWT_SECRET! });
 
 const credentials = z.object({
-  username: z.string().regex(/^[A-Za-z0-9_]{4,32}$/),
-  password: z.string().min(8).max(128),
+  username: z.string().regex(/^[A-Za-z0-9_]{2,32}$/),
+  password: z.string().min(6).max(128),
 });
 const boxInput = z.object({
   id: z.string().uuid().optional(),
@@ -127,9 +127,9 @@ app.post('/auth/logout', async (request) => {
 
 app.patch('/auth/profile', { preHandler: requireAuth }, async (request, reply) => {
   const input = z.object({
-    currentPassword: z.string().min(8).max(128),
-    username: z.string().regex(/^[A-Za-z0-9_]{4,32}$/).optional(),
-    newPassword: z.string().min(8).max(128).optional(),
+    currentPassword: z.string().min(6).max(128),
+    username: z.string().regex(/^[A-Za-z0-9_]{2,32}$/).optional(),
+    newPassword: z.string().min(6).max(128).optional(),
   }).parse(request.body);
   const [user] = await db.select().from(users).where(eq(users.id, request.user.id));
   if (!user || !(await verifyPassword(user.passwordHash, input.currentPassword))) {

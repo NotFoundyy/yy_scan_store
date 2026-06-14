@@ -1,7 +1,7 @@
 import type { Box, Item, SharedBox, StockMovement } from '../types/domain';
 import { api } from './api';
 import { getSession, setLocalDataOwner } from './auth';
-import { getDb, replaceDatabase } from './db';
+import { clearAccountDatabase, getDb, replaceDatabase } from './db';
 import { nowIso } from './dates';
 
 type CloudData = { boxes: Box[]; items: Item[]; movements: StockMovement[] };
@@ -12,6 +12,12 @@ export const cloudEnabled = () => Boolean(getSession());
 export const invalidateCloudData = () => {
   cache = undefined;
   pending = undefined;
+};
+
+export const clearLocalAccountData = async () => {
+  invalidateCloudData();
+  await clearAccountDatabase();
+  setLocalDataOwner(undefined);
 };
 
 export const getCloudData = async (force = false) => {
