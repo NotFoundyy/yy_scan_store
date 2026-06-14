@@ -8,11 +8,11 @@ import {
   Camera,
   ChevronLeft,
   ChevronRight,
-  CloudOff,
   Download,
   Edit3,
   FileDown,
   Home,
+  LockKeyhole,
   PackagePlus,
   Plus,
   QrCode,
@@ -21,6 +21,7 @@ import {
   Settings,
   Trash2,
   Upload,
+  UserRound,
 } from 'lucide-react';
 import type { AuthSession } from './lib/auth';
 import type { BackupFile, Box, Item, SharedBox, StockMovement } from './types/domain';
@@ -37,7 +38,7 @@ import { importBoxesWithItems } from './repositories/importBoxes';
 import { changeStock, createItem, deleteItem, listAllItems, listItemsByBox, updateItem } from './repositories/items';
 import { excludeOutboundMovementsFromExcelByTeams, listAllMovements, updateStockMovement } from './repositories/movements';
 import { api, hasApiConfiguration } from './lib/api';
-import { getSession, onSessionChange, setSession } from './lib/auth';
+import { getLocalDataOwner, getSession, onSessionChange, setSession } from './lib/auth';
 import { createShareQrValue, getSharedBox, getSyncStatus, invalidateCloudData, parseShareQrValue } from './lib/cloud';
 import { getDatabaseSnapshot } from './lib/db';
 
@@ -98,6 +99,7 @@ export function App() {
   const [toast, setToast] = useState<Toast>();
   const [session, setAuthSession] = useState<AuthSession | undefined>(getSession);
   const [syncStatus, setSyncStatus] = useState({ queued: 0, conflicts: 0 });
+  const [online, setOnline] = useState(navigator.onLine);
   const lowStockThreshold = DEFAULT_LOW_STOCK_THRESHOLD;
 
   const showToast = (next: Toast) => {
@@ -136,6 +138,19 @@ export function App() {
     loadAll().catch((error) => showToast({ type: 'error', message: error.message }));
   }), []);
 
+  useEffect(() => {
+    const update = () => {
+      setOnline(navigator.onLine);
+      if (navigator.onLine && getSession()) loadAll().catch(() => undefined);
+    };
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
+
   const currentBox = route.name === 'box' || route.name === 'qr' ? boxes.find((box) => box.id === route.id) : undefined;
 
   if (!session && route.name !== 'scan' && route.name !== 'shared') {
@@ -146,16 +161,6 @@ export function App() {
     <div className="app-shell">
       {toast && <div className={`toast ${toast.type}`}>{toast.message}</div>}
       <main className="app-main">
-        {session && (
-          <div className="account-strip">
-            <span>
-              当前账号：{session.user.username}
-              {syncStatus.queued > 0 ? ` · 待同步 ${syncStatus.queued}` : ''}
-              {syncStatus.conflicts > 0 ? ` · 冲突 ${syncStatus.conflicts}` : ''}
-            </span>
-            <button onClick={() => setSession(undefined)}>退出登录</button>
-          </div>
-        )}
         {loading && <div className="state-block">正在读取本地数据...</div>}
         {!loading && route.name === 'home' && (
           <HomePage
@@ -166,6 +171,7 @@ export function App() {
             refresh={loadAll}
             showToast={showToast}
             lowStockThreshold={lowStockThreshold}
+            online={online}
           />
         )}
         {!loading && route.name === 'boxes' && (
@@ -200,6 +206,9 @@ export function App() {
             movements={movements}
             showToast={showToast}
             refresh={loadAll}
+            session={session!}
+            online={online}
+            syncStatus={syncStatus}
           />
         )}
       </main>
@@ -213,50 +222,72 @@ function AuthPage({ navigate, showToast }: { navigate: (route: Route) => void; s
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const validUsername = /^[A-Za-z0-9_]{4,32}$/.test(username);
+  const validPassword = password.length >= 8 && password.length <= 128;
 
   return (
     <main className="auth-page">
       <section className="auth-card">
-        <h1>老于智慧仓管</h1>
-        <p>{mode === 'login' ? '登录后管理你的箱子' : '创建一个仓库账号'}</p>
+        <div className="auth-brand"><Boxes size={30} /></div>
+        <div className="auth-heading">
+          <h1>老于智慧仓管</h1>
+          <p>登录后，多台设备共享同一份箱子数据</p>
+        </div>
+        <div className="auth-tabs">
+          <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setError(''); }}>登录</button>
+          <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => { setMode('register'); setError(''); }}>注册</button>
+        </div>
         {!hasApiConfiguration() && <p className="danger-text">尚未配置 VITE_API_BASE_URL，暂时无法登录。</p>}
         <form
           onSubmit={async (event) => {
             event.preventDefault();
+            setError('');
+            if (!validUsername) {
+              setError('账号需要 4-32 位，只能使用字母、数字或下划线');
+              return;
+            }
+            if (!validPassword) {
+              setError('密码需要 8-128 位');
+              return;
+            }
             setSaving(true);
             try {
               const snapshot = await getDatabaseSnapshot();
-              const session = await api.post<AuthSession>(`/auth/${mode}`, { username, password });
-              setSession(session);
-              if (snapshot.boxes.length > 0 && confirm(`检测到本机有 ${snapshot.boxes.length} 个箱子，是否上传到当前账号？`)) {
+              const legacyData = !getLocalDataOwner() && snapshot.boxes.length > 0;
+              const nextSession = await api.post<AuthSession>(`/auth/${mode}`, { username, password });
+              setSession(nextSession, false);
+              if (legacyData && confirm(`检测到本机有 ${snapshot.boxes.length} 个旧版箱子，是否上传到当前账号？`)) {
                 await api.post('/import', snapshot);
                 invalidateCloudData();
-                setSession(session);
               }
+              setSession(nextSession);
               showToast({ type: 'success', message: mode === 'login' ? '登录成功' : '注册成功' });
             } catch (error) {
-              showToast({ type: 'error', message: error instanceof Error ? error.message : '登录失败' });
+              setSession(undefined, false);
+              const message = error instanceof Error ? error.message : '登录失败';
+              setError(message);
+              showToast({ type: 'error', message });
             } finally {
               setSaving(false);
             }
           }}
         >
-          <label className="field">
-            账号
-            <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="4-32 位字母、数字或下划线" />
+          <label className="auth-field">
+            <UserRound size={20} />
+            <input autoCapitalize="none" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value.trim())} placeholder="账号（字母、数字或下划线）" />
           </label>
-          <label className="field">
-            密码
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位" />
+          <label className="auth-field">
+            <LockKeyhole size={20} />
+            <input autoComplete={mode === 'login' ? 'current-password' : 'new-password'} type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码（至少 8 位）" />
           </label>
+          {error && <p className="auth-error">{error}</p>}
           <button className="primary full" disabled={saving || !hasApiConfiguration()}>
-            {saving ? '请稍候...' : mode === 'login' ? '登录' : '注册'}
+            {saving ? '请稍候...' : mode === 'login' ? '登录' : '创建账号'}
           </button>
         </form>
-        <button className="ghost full" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>
-          {mode === 'login' ? '没有账号，去注册' : '已有账号，去登录'}
-        </button>
-        <button className="ghost full" onClick={() => navigate({ name: 'scan' })}>不登录，直接扫码查看</button>
+        <div className="auth-divider"><span>只查看别人分享的箱子</span></div>
+        <button className="ghost full auth-scan" onClick={() => navigate({ name: 'scan' })}><ScanLine size={19} />不登录，直接扫码查看</button>
       </section>
     </main>
   );
@@ -364,6 +395,7 @@ function HomePage({
   refresh,
   showToast,
   lowStockThreshold,
+  online,
 }: {
   boxes: Box[];
   items: Item[];
@@ -372,6 +404,7 @@ function HomePage({
   refresh: () => Promise<void>;
   showToast: (toast: Toast) => void;
   lowStockThreshold: number;
+  online: boolean;
 }) {
   const [creating, setCreating] = useState(false);
   const lowStockCount = items.filter((item) => isLowStock(item, lowStockThreshold)).length;
@@ -392,16 +425,12 @@ function HomePage({
     <section className="home-page">
       <header className="home-header">
         <div>
-          <div className="title-line">
-            <h1>老于智慧仓管</h1>
-            <span className="local-badge">
-              <span />
-              本地数据
-            </span>
-          </div>
-          <p>{formatDateOnly(new Date().toISOString())} · 离线模式</p>
+          <h1>老于智慧仓管</h1>
+          <p className={`home-sync ${online ? 'online' : 'offline'}`}>
+            <span />
+            {formatDateOnly(new Date().toISOString())} · {online ? '云端数据已同步' : '离线使用，联网后自动同步'}
+          </p>
         </div>
-        <CloudOff size={28} />
       </header>
 
       <div className="overview-strip">
@@ -1108,14 +1137,20 @@ function ToolsPage({
   movements,
   showToast,
   refresh,
+  session,
+  online,
+  syncStatus,
 }: {
   boxes: Box[];
   items: Item[];
   movements: StockMovement[];
   showToast: (toast: Toast) => void;
   refresh: () => Promise<void>;
+  session: AuthSession;
+  online: boolean;
+  syncStatus: { queued: number; conflicts: number };
 }) {
-  const [mode, setMode] = useState<'hub' | 'export' | 'importBoxes' | 'backup' | 'movements'>('hub');
+  const [mode, setMode] = useState<'hub' | 'profile' | 'export' | 'importBoxes' | 'backup' | 'movements'>('hub');
   const initialized = useRef(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(boxes.map((box) => box.id)));
   const [fileName, setFileName] = useState(defaultExportFileName());
@@ -1219,6 +1254,15 @@ function ToolsPage({
     );
   }
 
+  if (mode === 'profile') {
+    return (
+      <section>
+        <PageHeader title="个人中心" subtitle="账号与同步设置" back={() => setMode('hub')} />
+        <ProfilePanel session={session} online={online} syncStatus={syncStatus} showToast={showToast} />
+      </section>
+    );
+  }
+
   if (mode === 'backup') {
     return (
       <section>
@@ -1249,6 +1293,15 @@ function ToolsPage({
   return (
     <section className="tool-hub-page">
       <PageHeader title="工具" subtitle="导出、导入、备份、流水" />
+      <button className="profile-summary" onClick={() => setMode('profile')}>
+        <span className="profile-avatar">{session.user.username.slice(0, 1).toUpperCase()}</span>
+        <span>
+          <strong>{session.user.username}</strong>
+          <small>{online ? '云端在线，数据实时同步' : '当前离线，操作将在联网后同步'}</small>
+        </span>
+        <span className={`sync-dot ${online ? 'online' : 'offline'}`} />
+        <ChevronRight size={20} />
+      </button>
       <div className="tool-hub">
         <button className="tool-card" onClick={() => setMode('export')}>
           <span className="tool-card-icon">
@@ -1276,7 +1329,7 @@ function ToolsPage({
           </span>
           <div>
             <strong>备份</strong>
-            <small>导出或恢复本地数据</small>
+            <small>导出或恢复当前账号数据</small>
           </div>
           <ChevronRight size={20} />
         </button>
@@ -1292,6 +1345,70 @@ function ToolsPage({
         </button>
       </div>
     </section>
+  );
+}
+
+function ProfilePanel({
+  session,
+  online,
+  syncStatus,
+  showToast,
+}: {
+  session: AuthSession;
+  online: boolean;
+  syncStatus: { queued: number; conflicts: number };
+  showToast: (toast: Toast) => void;
+}) {
+  const [username, setUsername] = useState(session.user.username);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  return (
+    <div className="profile-page">
+      <div className="profile-hero">
+        <span className="profile-avatar large">{session.user.username.slice(0, 1).toUpperCase()}</span>
+        <div><strong>{session.user.username}</strong><small>账号数据已启用云端同步</small></div>
+      </div>
+      <div className="sync-overview">
+        <div><span className={`sync-dot ${online ? 'online' : 'offline'}`} /><strong>{online ? '在线' : '离线'}</strong><small>服务器连接</small></div>
+        <div><strong>{syncStatus.queued}</strong><small>待同步操作</small></div>
+        <div><strong>{syncStatus.conflicts}</strong><small>同步冲突</small></div>
+      </div>
+      <form
+        className="tool-section profile-form"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          if (!currentPassword) {
+            showToast({ type: 'error', message: '请输入当前密码确认修改' });
+            return;
+          }
+          setSaving(true);
+          try {
+            const next = await api.patch<AuthSession>('/auth/profile', {
+              currentPassword,
+              username,
+              newPassword: newPassword || undefined,
+            });
+            setSession(next);
+            setCurrentPassword('');
+            setNewPassword('');
+            showToast({ type: 'success', message: '账号信息已更新' });
+          } catch (error) {
+            showToast({ type: 'error', message: error instanceof Error ? error.message : '修改失败' });
+          } finally {
+            setSaving(false);
+          }
+        }}
+      >
+        <div className="section-title"><div><h2>账号信息</h2><p>修改时需要验证当前密码</p></div><UserRound size={20} /></div>
+        <label className="field">账号<input value={username} onChange={(event) => setUsername(event.target.value.trim())} /></label>
+        <label className="field">当前密码<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
+        <label className="field">新密码（不修改可留空）<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
+        <button className="primary full" disabled={saving || !online}>{saving ? '保存中...' : '保存修改'}</button>
+      </form>
+      <button className="danger full profile-logout" onClick={() => setSession(undefined)}>退出登录</button>
+    </div>
   );
 }
 
@@ -1747,7 +1864,12 @@ function BackupPanel({
         <Archive size={20} />
       </div>
       <div className="action-panel compact">
-        <button className="primary full" onClick={() => exportBackup({ boxes, items, movements })}>
+        <button
+          className="primary full"
+          onClick={() => exportBackup({ boxes, items, movements }).catch((error) =>
+            showToast({ type: 'error', message: error instanceof Error ? error.message : '备份失败' }),
+          )}
+        >
           <Download size={18} />
           备份
         </button>
@@ -1762,7 +1884,7 @@ function BackupPanel({
           <div className="dialog">
             <h2>确认恢复备份</h2>
             <p>备份内包含 {pendingBackup.boxes.length} 个箱子、{pendingBackup.items.length} 个物品、{pendingBackup.movements.length} 条流水。</p>
-            <p className="danger-text">恢复会覆盖当前本地数据。</p>
+            <p className="danger-text">恢复会覆盖当前账号的全部数据。</p>
             <div className="dialog-actions">
               <button className="ghost" onClick={() => setPendingBackup(undefined)}>
                 取消

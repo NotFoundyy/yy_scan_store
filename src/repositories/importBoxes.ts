@@ -3,10 +3,11 @@ import type { ImportBoxRow } from '../lib/importBoxesExcel';
 import { getDb } from '../lib/db';
 import { nowIso } from '../lib/dates';
 import { createBoxCode, createId } from '../lib/ids';
+import { cloudEnabled, cloudImportSnapshot, getCloudData } from '../lib/cloud';
 
 export const importBoxesWithItems = async (rows: ImportBoxRow[]) => {
   const db = await getDb();
-  const existingBoxes = await db.getAll('boxes');
+  const existingBoxes = cloudEnabled() ? (await getCloudData()).boxes : await db.getAll('boxes');
   const knownNames = new Set(existingBoxes.map((box) => box.name.trim()));
   const knownCodes = new Set(existingBoxes.map((box) => box.code.trim()));
   const allBoxesForCode: Box[] = [...existingBoxes];
@@ -67,6 +68,16 @@ export const importBoxesWithItems = async (rows: ImportBoxRow[]) => {
       }
     });
   });
+
+  if (cloudEnabled()) {
+    await cloudImportSnapshot({ boxes, items, movements });
+    return {
+      importedBoxes: boxes.length,
+      importedItems: items.length,
+      importedMovements: movements.length,
+      skippedBoxes,
+    };
+  }
 
   const tx = db.transaction(['boxes', 'items', 'movements'], 'readwrite');
   await Promise.all([

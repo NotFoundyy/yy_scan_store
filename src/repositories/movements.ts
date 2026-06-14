@@ -2,7 +2,7 @@ import type { StockMovement } from '../types/domain';
 import { getDb } from '../lib/db';
 import { nowIso } from '../lib/dates';
 import { touchBox } from './boxes';
-import { cloudEnabled, getCloudData } from '../lib/cloud';
+import { cloudEnabled, cloudExcludeMovements, cloudUpdateMovement, getCloudData } from '../lib/cloud';
 
 export const listMovementsByBox = async (boxId: string) => {
   if (cloudEnabled()) {
@@ -47,6 +47,7 @@ const recalculateItemMovements = (movements: StockMovement[]) => {
 export const excludeOutboundMovementsFromExcelByTeams = async (input: { boxId: string; teamNames: string[] }) => {
   const teams = new Set(input.teamNames);
   if (!input.boxId || teams.size === 0) return 0;
+  if (cloudEnabled()) return cloudExcludeMovements(input.boxId, [...teams]);
 
   const db = await getDb();
   const tx = db.transaction('movements', 'readwrite');
@@ -63,6 +64,10 @@ export const updateStockMovement = async (
   movement: StockMovement,
   input: { quantity: number; teamName?: string; note?: string; createdAt: string; imageDataUrl?: string },
 ) => {
+  if (cloudEnabled()) {
+    await cloudUpdateMovement(movement.id, input);
+    return { ...movement, ...input };
+  }
   if (input.quantity < 0) throw new Error('数量不能小于 0');
   const db = await getDb();
   const item = await db.get('items', movement.itemId);

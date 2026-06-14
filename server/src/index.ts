@@ -36,10 +36,60 @@ const itemInput = z.object({
   note: z.string().optional(),
   createdAt: z.string().optional(),
 });
+const movementInput = z.object({
+  id: z.string().uuid(),
+  boxId: z.string().uuid(),
+  itemId: z.string().uuid(),
+  type: z.enum(['in', 'out', 'adjust']),
+  quantity: z.number().int().min(0),
+  beforeQuantity: z.number().int(),
+  afterQuantity: z.number().int(),
+  teamName: z.string().optional(),
+  exportExcluded: z.boolean().optional(),
+  imageDataUrl: z.string().optional(),
+  note: z.string().optional(),
+  createdAt: z.string(),
+});
+const snapshotInput = z.object({
+  boxes: z.array(boxInput.extend({ id: z.string().uuid(), code: z.string(), shareToken: z.string().min(20).optional() })),
+  items: z.array(itemInput.extend({ id: z.string().uuid() })),
+  movements: z.array(movementInput),
+});
 
 const ownBox = async (ownerId: string, id: string) => {
   const [box] = await db.select().from(boxes).where(and(eq(boxes.id, id), eq(boxes.ownerId, ownerId)));
   return box;
+};
+
+const insertSnapshot = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], ownerId: string, input: z.infer<typeof snapshotInput>) => {
+  const allowedBoxIds = new Set(input.boxes.map((box) => box.id));
+  const allowedItemIds = new Set(input.items.filter((item) => allowedBoxIds.has(item.boxId)).map((item) => item.id));
+  const existingBoxes = allowedBoxIds.size ? await tx.select({ id: boxes.id, ownerId: boxes.ownerId }).from(boxes).where(inArray(boxes.id, [...allowedBoxIds])) : [];
+  if (existingBoxes.some((box) => box.ownerId !== ownerId)) {
+    throw Object.assign(new Error('备份包含其他账号使用中的箱子标识，无法导入'), { statusCode: 409 });
+  }
+  for (const inputBox of input.boxes) {
+    const shareToken = inputBox.shareToken ?? createShareToken();
+    await tx.insert(boxes).values({
+      ...inputBox,
+      ownerId,
+      shareToken,
+      shareTokenHash: sha256(shareToken),
+      createdAt: inputBox.createdAt ? new Date(inputBox.createdAt) : new Date(),
+      updatedAt: new Date(),
+    }).onConflictDoNothing();
+  }
+  for (const inputItem of input.items.filter((item) => allowedBoxIds.has(item.boxId))) {
+    await tx.insert(items).values({
+      ...inputItem,
+      createdAt: inputItem.createdAt ? new Date(inputItem.createdAt) : new Date(),
+      updatedAt: new Date(),
+    }).onConflictDoNothing();
+  }
+  for (const movement of input.movements.filter((entry) => allowedBoxIds.has(entry.boxId) && allowedItemIds.has(entry.itemId))) {
+    await tx.insert(movements).values({ ...movement, createdAt: new Date(movement.createdAt) }).onConflictDoNothing();
+  }
+  return { boxes: input.boxes.length, items: allowedItemIds.size };
 };
 
 app.get('/health', async () => ({ ok: true }));
@@ -75,43 +125,41 @@ app.post('/auth/logout', async (request) => {
   return { ok: true };
 });
 
-app.post('/import', { preHandler: requireAuth }, async (request) => {
+app.patch('/auth/profile', { preHandler: requireAuth }, async (request, reply) => {
   const input = z.object({
-    boxes: z.array(boxInput.extend({ id: z.string().uuid(), code: z.string() })),
-    items: z.array(itemInput.extend({ id: z.string().uuid() })),
-    movements: z.array(z.object({
-      id: z.string().uuid(), boxId: z.string().uuid(), itemId: z.string().uuid(),
-      type: z.enum(['in', 'out', 'adjust']), quantity: z.number().int().min(0),
-      beforeQuantity: z.number().int(), afterQuantity: z.number().int(), teamName: z.string().optional(),
-      exportExcluded: z.boolean().optional(), imageDataUrl: z.string().optional(), note: z.string().optional(), createdAt: z.string(),
-    })),
+    currentPassword: z.string().min(8).max(128),
+    username: z.string().regex(/^[A-Za-z0-9_]{4,32}$/).optional(),
+    newPassword: z.string().min(8).max(128).optional(),
   }).parse(request.body);
-  const allowedBoxIds = new Set(input.boxes.map((box) => box.id));
-  const allowedItemIds = new Set(input.items.filter((item) => allowedBoxIds.has(item.boxId)).map((item) => item.id));
-  await db.transaction(async (tx) => {
-    for (const inputBox of input.boxes) {
-      const shareToken = createShareToken();
-      await tx.insert(boxes).values({
-        ...inputBox,
-        ownerId: request.user.id,
-        shareToken,
-        shareTokenHash: sha256(shareToken),
-        createdAt: inputBox.createdAt ? new Date(inputBox.createdAt) : new Date(),
-        updatedAt: new Date(),
-      }).onConflictDoNothing();
-    }
-    for (const inputItem of input.items.filter((item) => allowedBoxIds.has(item.boxId))) {
-      await tx.insert(items).values({
-        ...inputItem,
-        createdAt: inputItem.createdAt ? new Date(inputItem.createdAt) : new Date(),
-        updatedAt: new Date(),
-      }).onConflictDoNothing();
-    }
-    for (const movement of input.movements.filter((entry) => allowedBoxIds.has(entry.boxId) && allowedItemIds.has(entry.itemId))) {
-      await tx.insert(movements).values({ ...movement, createdAt: new Date(movement.createdAt) }).onConflictDoNothing();
-    }
+  const [user] = await db.select().from(users).where(eq(users.id, request.user.id));
+  if (!user || !(await verifyPassword(user.passwordHash, input.currentPassword))) {
+    return reply.status(401).send({ message: '当前密码错误' });
+  }
+  const username = input.username?.trim() || user.username;
+  if (username !== user.username) {
+    const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.username, username));
+    if (existing) return reply.status(409).send({ message: '账号已存在' });
+  }
+  await db.update(users).set({
+    username,
+    passwordHash: input.newPassword ? await hashPassword(input.newPassword) : user.passwordHash,
+    updatedAt: new Date(),
+  }).where(eq(users.id, user.id));
+  await db.delete(sessions).where(eq(sessions.userId, user.id));
+  return createSession(app, { id: user.id, username });
+});
+
+app.post('/import', { preHandler: requireAuth }, async (request) => {
+  const input = snapshotInput.parse(request.body);
+  return db.transaction((tx) => insertSnapshot(tx, request.user.id, input));
+});
+
+app.post('/restore', { preHandler: requireAuth }, async (request) => {
+  const input = snapshotInput.parse(request.body);
+  return db.transaction(async (tx) => {
+    await tx.delete(boxes).where(eq(boxes.ownerId, request.user.id));
+    return insertSnapshot(tx, request.user.id, input);
   });
-  return { boxes: input.boxes.length, items: allowedItemIds.size };
 });
 
 app.get('/data', { preHandler: requireAuth }, async (request) => {
@@ -171,6 +219,7 @@ app.post('/items', { preHandler: requireAuth }, async (request, reply) => {
     id: crypto.randomUUID(), boxId: input.boxId, itemId: item!.id, type: 'in', quantity: input.quantity,
     beforeQuantity: 0, afterQuantity: input.quantity, note: '初始库存', createdAt: now,
   });
+  await db.update(boxes).set({ updatedAt: new Date() }).where(eq(boxes.id, input.boxId));
   return item;
 });
 
@@ -194,6 +243,7 @@ app.patch('/items/:id', { preHandler: requireAuth }, async (request, reply) => {
         note: '手动调整库存',
       });
     }
+    await tx.update(boxes).set({ updatedAt: new Date() }).where(eq(boxes.id, current.boxId));
     return [updated];
   });
   return item;
@@ -204,6 +254,7 @@ app.delete('/items/:id', { preHandler: requireAuth }, async (request, reply) => 
   const [item] = await db.select().from(items).where(eq(items.id, id));
   if (!item || !(await ownBox(request.user.id, item.boxId))) return reply.status(404).send({ message: '物品不存在' });
   await db.delete(items).where(eq(items.id, id));
+  await db.update(boxes).set({ updatedAt: new Date() }).where(eq(boxes.id, item.boxId));
   return { ok: true };
 });
 
@@ -238,6 +289,7 @@ app.post('/items/:id/movements', { preHandler: requireAuth }, async (request, re
     const movementId = crypto.randomUUID();
     const createdAt = input.createdAt ? new Date(input.createdAt) : new Date();
     await client.query('UPDATE items SET quantity=$1, updated_at=NOW() WHERE id=$2', [after, id]);
+    await client.query('UPDATE boxes SET updated_at=NOW() WHERE id=$1', [item.box_id]);
     await client.query(
       `INSERT INTO movements(id,box_id,item_id,type,quantity,before_quantity,after_quantity,team_name,note,image_data_url,created_at)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
@@ -253,6 +305,69 @@ app.post('/items/:id/movements', { preHandler: requireAuth }, async (request, re
   } finally {
     client.release();
   }
+});
+
+app.patch('/movements/:id', { preHandler: requireAuth }, async (request, reply) => {
+  const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+  const input = z.object({
+    quantity: z.number().int().min(0),
+    teamName: z.string().optional(),
+    note: z.string().optional(),
+    imageDataUrl: z.string().optional(),
+    createdAt: z.string(),
+  }).parse(request.body);
+  const client = await rawPool.connect();
+  try {
+    await client.query('BEGIN');
+    const currentResult = await client.query(
+      `SELECT m.*, b.owner_id FROM movements m JOIN boxes b ON b.id=m.box_id WHERE m.id=$1 FOR UPDATE`,
+      [id],
+    );
+    const current = currentResult.rows[0];
+    if (!current || current.owner_id !== request.user.id) {
+      await client.query('ROLLBACK');
+      return reply.status(404).send({ message: '流水不存在' });
+    }
+    await client.query(
+      `UPDATE movements SET quantity=$1, team_name=$2, note=$3, image_data_url=$4, created_at=$5 WHERE id=$6`,
+      [input.quantity, current.type === 'out' ? input.teamName : current.team_name, input.note, input.imageDataUrl, new Date(input.createdAt), id],
+    );
+    const all = await client.query('SELECT * FROM movements WHERE item_id=$1 ORDER BY created_at ASC, id ASC FOR UPDATE', [current.item_id]);
+    let stock = 0;
+    for (const movement of all.rows) {
+      const before = stock;
+      if (movement.type === 'in') stock += movement.quantity;
+      else if (movement.type === 'out') stock -= movement.quantity;
+      else stock = movement.after_quantity;
+      if (stock < 0) {
+        await client.query('ROLLBACK');
+        return reply.status(409).send({ message: '编辑后库存不能为负数' });
+      }
+      await client.query('UPDATE movements SET before_quantity=$1, after_quantity=$2 WHERE id=$3', [before, stock, movement.id]);
+    }
+    await client.query('UPDATE items SET quantity=$1, updated_at=NOW() WHERE id=$2', [stock, current.item_id]);
+    await client.query('UPDATE boxes SET updated_at=NOW() WHERE id=$1', [current.box_id]);
+    await client.query('COMMIT');
+    return { ok: true };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/boxes/:id/movements/exclude', { preHandler: requireAuth }, async (request, reply) => {
+  const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+  const { teamNames } = z.object({ teamNames: z.array(z.string()).min(1) }).parse(request.body);
+  if (!(await ownBox(request.user.id, id))) return reply.status(404).send({ message: '箱子不存在' });
+  const result = await rawPool.query(
+    `UPDATE movements SET export_excluded=TRUE
+     WHERE box_id=$1 AND type='out' AND export_excluded=FALSE
+       AND COALESCE(NULLIF(TRIM(team_name), ''), '未填班组') = ANY($2::text[])`,
+    [id, teamNames],
+  );
+  return { count: result.rowCount ?? 0 };
 });
 
 app.get('/shared/boxes/:id', async (request, reply) => {

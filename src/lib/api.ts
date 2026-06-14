@@ -14,14 +14,25 @@ export class ApiError extends Error {
 
 const request = async <T>(path: string, init: RequestInit = {}, retry = true): Promise<T> => {
   const session = getSession();
-  const response = await fetch(`${apiBase}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...init.headers,
-      ...(session?.accessToken ? { Authorization: `Bearer ${session.accessToken}` } : {}),
-    },
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 12000);
+  let response: Response;
+  try {
+    const hasBody = init.body !== undefined && init.body !== null;
+    response = await fetch(`${apiBase}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+        ...init.headers,
+        ...(session?.accessToken ? { Authorization: `Bearer ${session.accessToken}` } : {}),
+      },
+    });
+  } catch (error) {
+    throw new ApiError(error instanceof DOMException && error.name === 'AbortError' ? '服务器响应超时' : '无法连接服务器，请检查网络', 0);
+  } finally {
+    window.clearTimeout(timeout);
+  }
   if (response.status === 401 && retry && session?.refreshToken && path !== '/auth/refresh') {
     try {
       const refreshed = await request<AuthSession>('/auth/refresh', {

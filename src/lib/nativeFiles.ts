@@ -34,6 +34,25 @@ export const shareBase64File = async (input: {
   return saved.uri;
 };
 
+export const shareTextFile = async (input: {
+  text: string;
+  fileName: string;
+  title: string;
+  dialogTitle: string;
+}) => {
+  const bytes = new TextEncoder().encode(input.text);
+  let binary = '';
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return shareBase64File({
+    base64: btoa(binary),
+    fileName: input.fileName,
+    title: input.title,
+    dialogTitle: input.dialogTitle,
+  });
+};
+
 export const saveDataUrlPhotoToGallery = async (input: { dataUrl: string; fileName: string; albumName?: string }) => {
   const { Media } = await import('@capacitor-community/media');
   const albumName = input.albumName ?? '老于智慧仓管';

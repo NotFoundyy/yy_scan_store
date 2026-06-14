@@ -1,6 +1,6 @@
 import type { Box, Item, SharedBox, StockMovement } from '../types/domain';
 import { api } from './api';
-import { getSession } from './auth';
+import { getSession, setLocalDataOwner } from './auth';
 import { getDb, replaceDatabase } from './db';
 import { nowIso } from './dates';
 
@@ -19,6 +19,7 @@ export const getCloudData = async (force = false) => {
   pending ??= flushSyncQueue().then(() => api.get<CloudData>('/data')).then(async (data) => {
     cache = data;
     await replaceDatabase(data);
+    setLocalDataOwner(getSession()?.user.id);
     return data;
   }).finally(() => {
     pending = undefined;
@@ -181,6 +182,36 @@ export const cloudChangeStock = async (
 export const getSharedBox = (boxId: string, token: string) =>
   api.get<SharedBox>(`/shared/boxes/${encodeURIComponent(boxId)}?token=${encodeURIComponent(token)}`);
 
+export const cloudImportSnapshot = async (data: CloudData) => {
+  const result = await api.post<{ boxes: number; items: number }>('/import', data);
+  invalidateCloudData();
+  await getCloudData(true);
+  return result;
+};
+
+export const cloudRestoreSnapshot = async (data: CloudData) => {
+  const result = await api.post<{ boxes: number; items: number }>('/restore', data);
+  invalidateCloudData();
+  await getCloudData(true);
+  return result;
+};
+
+export const cloudUpdateMovement = async (
+  id: string,
+  input: { quantity: number; teamName?: string; note?: string; createdAt: string; imageDataUrl?: string },
+) => {
+  await api.patch(`/movements/${id}`, input);
+  invalidateCloudData();
+  await getCloudData(true);
+};
+
+export const cloudExcludeMovements = async (boxId: string, teamNames: string[]) => {
+  const result = await api.post<{ count: number }>(`/boxes/${boxId}/movements/exclude`, { teamNames });
+  invalidateCloudData();
+  await getCloudData(true);
+  return result.count;
+};
+
 export const createShareQrValue = (box: Box) =>
   box.shareToken ? `storescan:v1:box:${box.id}:${box.shareToken}` : box.code;
 
@@ -207,7 +238,7 @@ export const flushSyncQueue = async () => {
       await db.delete('syncQueue', entry.id);
     } catch (error) {
       const status = typeof error === 'object' && error && 'status' in error ? Number(error.status) : 0;
-      if (status === 409) {
+      if (status >= 400 && status < 500) {
         await db.put('syncConflicts', {
           id: entry.id,
           type: entry.type,
