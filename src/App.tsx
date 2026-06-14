@@ -13,7 +13,6 @@ import {
   Edit3,
   FileDown,
   Home,
-  LockKeyhole,
   PackagePlus,
   Plus,
   QrCode,
@@ -22,7 +21,6 @@ import {
   Settings,
   Trash2,
   Upload,
-  UserRound,
 } from 'lucide-react';
 import type { AuthSession } from './lib/auth';
 import type { BackupFile, Box, Item, SharedBox, StockMovement } from './types/domain';
@@ -286,11 +284,9 @@ function AuthPage({ navigate, showToast }: { navigate: (route: Route) => void; s
           }}
         >
           <label className="auth-field">
-            <UserRound size={20} />
             <input autoCapitalize="none" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value.trim())} placeholder="账号（字母、数字或下划线）" />
           </label>
           <label className="auth-field">
-            <LockKeyhole size={20} />
             <input autoComplete={mode === 'login' ? 'current-password' : 'new-password'} type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码（至少 6 位）" />
           </label>
           {error && <p className="auth-error">{error}</p>}
@@ -1440,7 +1436,7 @@ function ProfilePanel({
         <div><strong className={syncStatus.conflicts > 0 ? 'warning-text' : ''}>{syncStatus.conflicts}</strong><small>同步冲突</small></div>
       </div>
       <form
-        className="tool-section profile-form"
+        className="profile-form"
         onSubmit={async (event) => {
           event.preventDefault();
           if (!currentPassword) {
@@ -1473,10 +1469,10 @@ function ProfilePanel({
           }
         }}
       >
-        <div className="section-title"><div><h2>账号信息</h2><p>修改时需要验证当前密码</p></div><UserRound size={20} /></div>
-        <label className="field">账号<input value={username} onChange={(event) => setUsername(event.target.value.trim())} /></label>
-        <label className="field">当前密码<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
-        <label className="field">新密码（不修改可留空）<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
+        <div className="section-title"><div><h2>账号信息</h2><p>修改时需要验证当前密码</p></div></div>
+        <label className="field"><span>账号</span><input value={username} onChange={(event) => setUsername(event.target.value.trim())} /></label>
+        <label className="field"><span>当前密码</span><input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
+        <label className="field"><span>新密码</span><input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="不修改可留空" /></label>
         <button className="primary full" disabled={saving || !online}>{saving ? '保存中...' : '保存修改'}</button>
       </form>
       <button
