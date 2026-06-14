@@ -34,7 +34,7 @@ import { defaultExportFileName, defaultMovementExportFileName, exportExcel, expo
 import { exportBackup, parseBackupFile, restoreBackup } from './lib/backup';
 import { dataUrlToBase64, isNativeApp, saveDataUrlPhotoToGallery, shareBase64File } from './lib/nativeFiles';
 import { displayBoxCode } from './lib/ids';
-import { archiveBox, createBox, deleteBox, getBoxByCode, listBoxes, updateBox } from './repositories/boxes';
+import { archiveBox, createBox, deleteBox, getBox, getBoxByCode, listBoxes, updateBox } from './repositories/boxes';
 import { importBoxesWithItems } from './repositories/importBoxes';
 import { changeStock, createItem, deleteItem, listAllItems, listItemsByBox, updateItem } from './repositories/items';
 import { excludeOutboundMovementsFromExcelByTeams, listAllMovements, updateStockMovement } from './repositories/movements';
@@ -1065,8 +1065,13 @@ function ScanPage({ navigate, showToast }: { navigate: (route: Route) => void; s
     }
     const shared = parseShareQrValue(code);
     if (shared) {
+      const ownBox = getSession() ? await getBox(shared.boxId) : undefined;
       controlsRef.current?.stop();
-      navigate({ name: 'shared', id: shared.boxId, token: shared.token });
+      if (ownBox) {
+        navigate({ name: 'box', id: shared.boxId });
+      } else {
+        navigate({ name: 'shared', id: shared.boxId, token: shared.token });
+      }
       return;
     }
     const box = await getBoxByCode(code);
