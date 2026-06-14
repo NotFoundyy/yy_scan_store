@@ -102,6 +102,10 @@ export function App() {
   const [session, setAuthSession] = useState<AuthSession | undefined>(getSession);
   const [syncStatus, setSyncStatus] = useState({ queued: 0, conflicts: 0 });
   const [online, setOnline] = useState(navigator.onLine);
+  const [appVersion, setAppVersion] = useState<string>(() =>
+    Capacitor.isNativePlatform() ? (localStorage.getItem('app-last-version') ?? '') : ''
+  );
+  const [updateInfo, setUpdateInfo] = useState<{ version: string; changelog?: string } | undefined>();
   const lowStockThreshold = DEFAULT_LOW_STOCK_THRESHOLD;
 
   const showToast = (next: Toast) => {
@@ -114,16 +118,38 @@ export function App() {
     if (!Capacitor.isNativePlatform() || !apiBase) return;
     (async () => {
       try {
-        const { bundle: current } = await CapacitorUpdater.current();
+        const { bundle } = await CapacitorUpdater.current();
+        const lastVersion = localStorage.getItem('app-last-version') ?? '';
+
+        // Just updated — show changelog dialog
+        if (bundle.version !== 'builtin' && bundle.version !== lastVersion) {
+          localStorage.setItem('app-last-version', bundle.version);
+          setAppVersion(bundle.version);
+          try {
+            const vres = await fetch(`${apiBase}/bundles/version.json`, { cache: 'no-store' });
+            const vdata = vres.ok ? await vres.json() as { version: string; changelog?: string } : {};
+            setUpdateInfo({ version: bundle.version, changelog: (vdata as { changelog?: string }).changelog });
+          } catch {
+            setUpdateInfo({ version: bundle.version });
+          }
+          return;
+        }
+
+        if (!lastVersion && bundle.version !== 'builtin') {
+          localStorage.setItem('app-last-version', bundle.version);
+          setAppVersion(bundle.version);
+        }
+
+        // Check for new version
         const res = await fetch(`${apiBase}/bundles/version.json`, { cache: 'no-store' });
         if (!res.ok) return;
         const { version, url } = await res.json() as { version: string; url?: string };
-        if (!url || !version || version === '0.0.0' || version === current.version) return;
+        if (!url || !version || version === '0.0.0' || version === bundle.version) return;
         showToast({ type: 'success', message: `发现新版本 ${version}，正在更新...` });
-        const bundle = await CapacitorUpdater.download({ url, version });
-        await CapacitorUpdater.set(bundle);
+        const newBundle = await CapacitorUpdater.download({ url, version });
+        await CapacitorUpdater.set(newBundle);
       } catch {
-        // 静默忽略更新错误，不影响主流程
+        // ignore
       }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -181,10 +207,25 @@ export function App() {
     return <AuthPage navigate={navigate} showToast={showToast} />;
   }
 
+  const UpdateDialog = updateInfo && (
+    <div className="update-backdrop" onClick={() => setUpdateInfo(undefined)}>
+      <div className="update-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="update-modal-icon"><Boxes size={22} /></div>
+        <h2>已更新到 v{updateInfo.version}</h2>
+        {updateInfo.changelog
+          ? <div className="update-changelog">{updateInfo.changelog.split('\n').filter(Boolean).map((line, i) => <p key={i}>{line}</p>)}</div>
+          : <p className="update-desc">App 已在后台自动更新完成。</p>
+        }
+        <button className="update-close" onClick={() => setUpdateInfo(undefined)}>知道了</button>
+      </div>
+    </div>
+  );
+
   if (session?.user.isAdmin) {
     return (
       <div className="app-shell">
         {toast && <div className={`toast ${toast.type}`}>{toast.message}</div>}
+        {UpdateDialog}
         <AdminPanel session={session} showToast={showToast} />
       </div>
     );
@@ -193,6 +234,7 @@ export function App() {
   return (
     <div className="app-shell">
       {toast && <div className={`toast ${toast.type}`}>{toast.message}</div>}
+      {UpdateDialog}
       <main className="app-main">
         {loading && <div className="state-block">正在读取本地数据...</div>}
         {!loading && route.name === 'home' && (
@@ -242,6 +284,7 @@ export function App() {
             session={session!}
             online={online}
             syncStatus={syncStatus}
+            appVersion={appVersion}
           />
         )}
       </main>
@@ -1391,6 +1434,7 @@ function ToolsPage({
   session,
   online,
   syncStatus,
+  appVersion,
 }: {
   boxes: Box[];
   items: Item[];
@@ -1400,6 +1444,7 @@ function ToolsPage({
   session: AuthSession;
   online: boolean;
   syncStatus: { queued: number; conflicts: number };
+  appVersion: string;
 }) {
   const [mode, setMode] = useState<'hub' | 'profile' | 'export' | 'importBoxes' | 'backup' | 'movements'>('hub');
   const initialized = useRef(false);
@@ -1595,6 +1640,9 @@ function ToolsPage({
           <ChevronRight size={20} />
         </button>
       </div>
+      {appVersion && appVersion !== 'builtin' && (
+        <p className="app-version-label">老于智慧仓管 v{appVersion}</p>
+      )}
     </section>
   );
 }

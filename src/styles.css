@@ -2517,3 +2517,84 @@ button:disabled {
   text-align: right;
   word-break: break-all;
 }
+
+/* ─── Update dialog ──────────────────────────────────────────────────────────── */
+.update-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: grid;
+  place-items: end center;
+  z-index: 200;
+}
+
+.update-modal {
+  width: 100%;
+  max-width: 480px;
+  padding: 24px 24px 36px;
+  border-radius: 20px 20px 0 0;
+  background: var(--surface);
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.14);
+  text-align: center;
+}
+
+.update-modal-icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border-radius: 14px;
+  background: var(--teal);
+  color: white;
+  margin: 0 auto 16px;
+}
+
+.update-modal h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.update-desc {
+  margin: 0 0 20px;
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.update-changelog {
+  text-align: left;
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 20px;
+}
+
+.update-changelog p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink);
+  line-height: 1.8;
+}
+
+.update-close {
+  width: 100%;
+  min-height: 48px;
+  border-radius: 12px;
+  background: var(--teal);
+  color: white;
+  font-size: 16px;
+  font-weight: 600;
+  border: 0;
+}
+
+/* ─── Version label ─────────────────────────────────────────────────────────── */
+.app-version-label {
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 20px 0 8px;
+  margin: 0;
+  opacity: 0.6;
+}

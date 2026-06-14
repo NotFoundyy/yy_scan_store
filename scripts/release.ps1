@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Version
+    [string]$Version,
+
+    [string]$Changelog = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,7 +25,12 @@ Write-Host "==> Uploading to server ..."
 scp $ZipPath "${Server}:${RemoteDir}/latest.zip"
 
 Write-Host "==> Updating version.json ..."
-$json = "{`"version`":`"$Version`",`"url`":`"$BundleUrl`"}"
+if ($Changelog) {
+    $escaped = $Changelog -replace '"', '\"' -replace "'", "'\''"
+    $json = "{""version"":""$Version"",""url"":""$BundleUrl"",""changelog"":""$escaped""}"
+} else {
+    $json = "{""version"":""$Version"",""url"":""$BundleUrl""}"
+}
 ssh $Server "echo '$json' > $RemoteDir/version.json"
 
 Remove-Item $ZipPath
