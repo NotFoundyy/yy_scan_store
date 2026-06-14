@@ -1,4 +1,4 @@
-export type AuthUser = { id: string; username: string };
+export type AuthUser = { id: string; username: string; isAdmin: boolean };
 export type AuthSession = { accessToken: string; refreshToken: string; user: AuthUser };
 
 const sessionKey = 'store-scan-auth-session';

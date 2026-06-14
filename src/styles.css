@@ -2159,3 +2159,221 @@ button:disabled {
     display: none;
   }
 }
+
+/* ─── Admin Panel ──────────────────────────────────────────────────────────── */
+.admin-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.admin-header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.admin-header p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.admin-logout {
+  min-height: 36px;
+  padding: 0 16px;
+  border-radius: 8px;
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 14px;
+  font-weight: 600;
+  border: 0;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 0;
+  padding: 12px 20px 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.admin-tabs button {
+  padding: 10px 20px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-bottom: -1px;
+}
+
+.admin-tabs button.active {
+  color: var(--teal);
+  border-bottom-color: var(--teal);
+  font-weight: 600;
+}
+
+.admin-list {
+  flex: 1;
+  padding: 0 20px;
+  overflow-y: auto;
+}
+
+.admin-state {
+  padding: 40px 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.admin-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-row > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.admin-row strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.admin-row small {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.admin-row-fail strong {
+  color: var(--red);
+}
+
+.admin-action {
+  flex-shrink: 0;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 8px;
+  background: var(--teal-soft);
+  color: var(--teal);
+  font-size: 13px;
+  font-weight: 600;
+  border: 0;
+}
+
+.admin-badge {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.admin-badge.success {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.admin-badge.fail {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.admin-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: grid;
+  place-items: center;
+  z-index: 100;
+  padding: 24px;
+}
+
+.admin-modal {
+  width: min(100%, 340px);
+  padding: 24px;
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.18);
+}
+
+.admin-modal h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.admin-modal p {
+  margin: 0 0 16px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.admin-input {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--bg);
+  font-size: 15px;
+  color: var(--ink);
+  outline: none;
+  margin-bottom: 16px;
+}
+
+.admin-input:focus {
+  border-color: var(--teal);
+}
+
+.admin-modal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.admin-cancel {
+  min-height: 44px;
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 500;
+  border: 0;
+}
+
+.admin-confirm {
+  min-height: 44px;
+  border-radius: 10px;
+  background: var(--teal);
+  color: white;
+  font-size: 15px;
+  font-weight: 600;
+  border: 0;
+}
+
+.admin-confirm:disabled {
+  opacity: 0.5;
+}

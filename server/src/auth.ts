@@ -1,11 +1,11 @@
 import crypto from 'node:crypto';
 import argon2 from 'argon2';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { db } from './db.js';
 import { sessions } from './schema.js';
 
-export type AuthUser = { id: string; username: string };
+export type AuthUser = { id: string; username: string; isAdmin: boolean };
 
 declare module '@fastify/jwt' {
   interface FastifyJWT {
@@ -34,6 +34,10 @@ export const createSession = async (app: FastifyInstance, user: AuthUser) => {
 };
 
 export const requireAuth = async (request: FastifyRequest) => request.jwtVerify();
+export const requireAdmin = async (request: FastifyRequest, reply: FastifyReply) => {
+  await request.jwtVerify();
+  if (!request.user.isAdmin) return reply.status(403).send({ message: '无权限' });
+};
 
 export const revokeRefreshToken = async (token: string) => {
   await db.delete(sessions).where(eq(sessions.refreshTokenHash, sha256(token)));

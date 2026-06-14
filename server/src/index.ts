@@ -4,9 +4,9 @@ import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
-import { createSession, createShareToken, hashPassword, requireAuth, revokeRefreshToken, sha256, verifyPassword } from './auth.js';
+import { createSession, createShareToken, hashPassword, requireAdmin, requireAuth, revokeRefreshToken, sha256, verifyPassword } from './auth.js';
 import { db, rawPool } from './db.js';
-import { boxes, items, movements, sessions, syncOperations, users } from './schema.js';
+import { boxes, items, loginLogs, movements, sessions, syncOperations, users } from './schema.js';
 
 const app = Fastify({ logger: true });
 await app.register(cors, { origin: process.env.CORS_ORIGIN === '*' ? true : process.env.CORS_ORIGIN });
@@ -92,21 +92,46 @@ const insertSnapshot = async (tx: Parameters<Parameters<typeof db.transaction>[0
   return { boxes: input.boxes.length, items: allowedItemIds.size };
 };
 
+// ─── startup migrations ───────────────────────────────────────────────────────
+await rawPool.query(`
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
+  CREATE TABLE IF NOT EXISTS login_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    username TEXT NOT NULL,
+    ip TEXT,
+    success BOOLEAN NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS login_logs_created_at_idx ON login_logs(created_at DESC);
+`);
+
+// Create admin account if missing
+{
+  const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.username, 'admin'));
+  if (!existing) {
+    await db.insert(users).values({ username: 'admin', passwordHash: await hashPassword('admin888'), isAdmin: true });
+  }
+}
+
 app.get('/health', async () => ({ ok: true }));
 
 app.post('/auth/register', async (request, reply) => {
   const input = credentials.parse(request.body);
+  if (input.username === 'admin') return reply.status(409).send({ message: '账号已存在' });
   const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.username, input.username));
   if (existing) return reply.status(409).send({ message: '账号已存在' });
   const [user] = await db.insert(users).values({ username: input.username, passwordHash: await hashPassword(input.password) }).returning();
-  return createSession(app, { id: user!.id, username: user!.username });
+  return createSession(app, { id: user!.id, username: user!.username, isAdmin: false });
 });
 
 app.post('/auth/login', async (request, reply) => {
   const input = credentials.parse(request.body);
   const [user] = await db.select().from(users).where(eq(users.username, input.username));
-  if (!user || !(await verifyPassword(user.passwordHash, input.password))) return reply.status(401).send({ message: '账号或密码错误' });
-  return createSession(app, { id: user.id, username: user.username });
+  const ok = Boolean(user && await verifyPassword(user.passwordHash, input.password));
+  await db.insert(loginLogs).values({ userId: user?.id, username: input.username, ip: request.ip, success: ok });
+  if (!ok) return reply.status(401).send({ message: '账号或密码错误' });
+  return createSession(app, { id: user!.id, username: user!.username, isAdmin: user!.isAdmin });
 });
 
 app.post('/auth/refresh', async (request, reply) => {
@@ -116,7 +141,7 @@ app.post('/auth/refresh', async (request, reply) => {
   const [user] = await db.select().from(users).where(eq(users.id, session.userId));
   if (!user) return reply.status(401).send({ message: '登录已过期' });
   await revokeRefreshToken(refreshToken);
-  return createSession(app, { id: user.id, username: user.username });
+  return createSession(app, { id: user.id, username: user.username, isAdmin: user.isAdmin });
 });
 
 app.post('/auth/logout', async (request) => {
@@ -146,7 +171,7 @@ app.post('/auth/profile/update', { preHandler: requireAuth }, async (request, re
     updatedAt: new Date(),
   }).where(eq(users.id, user.id));
   await db.delete(sessions).where(eq(sessions.userId, user.id));
-  return createSession(app, { id: user.id, username });
+  return createSession(app, { id: user.id, username, isAdmin: user.isAdmin });
 });
 
 app.post('/import', { preHandler: requireAuth }, async (request) => {
@@ -380,6 +405,27 @@ app.get('/shared/boxes/:id', async (request, reply) => {
     box: { id: box.id, name: box.name, code: box.code, imageDataUrl: box.imageDataUrl, updatedAt: box.updatedAt.toISOString() },
     items: publicItems.map(({ note: _note, ...item }) => item),
   };
+});
+
+// ─── admin routes ────────────────────────────────────────────────────────────
+app.get('/admin/users', { preHandler: requireAdmin }, async () => {
+  return db.select({ id: users.id, username: users.username, createdAt: users.createdAt })
+    .from(users).where(eq(users.isAdmin, false));
+});
+
+app.post('/admin/users/:id/reset-password', { preHandler: requireAdmin }, async (request, reply) => {
+  const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+  const { newPassword } = z.object({ newPassword: z.string().min(6).max(128) }).parse(request.body);
+  const [user] = await db.select({ id: users.id }).from(users).where(and(eq(users.id, id), eq(users.isAdmin, false)));
+  if (!user) return reply.status(404).send({ message: '用户不存在' });
+  await db.update(users).set({ passwordHash: await hashPassword(newPassword), updatedAt: new Date() }).where(eq(users.id, id));
+  await db.delete(sessions).where(eq(sessions.userId, id));
+  return { ok: true };
+});
+
+app.get('/admin/login-logs', { preHandler: requireAdmin }, async (request) => {
+  const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(500).default(200) }).parse(request.query);
+  return db.select().from(loginLogs).orderBy(desc(loginLogs.createdAt)).limit(limit);
 });
 
 app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {

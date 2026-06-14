@@ -160,6 +160,15 @@ export function App() {
     return <AuthPage navigate={navigate} showToast={showToast} />;
   }
 
+  if (session?.user.isAdmin) {
+    return (
+      <div className="app-shell">
+        {toast && <div className={`toast ${toast.type}`}>{toast.message}</div>}
+        <AdminPanel session={session} showToast={showToast} />
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       {toast && <div className={`toast ${toast.type}`}>{toast.message}</div>}
@@ -216,6 +225,121 @@ export function App() {
         )}
       </main>
       {session && <BottomNav route={route} navigate={navigate} />}
+    </div>
+  );
+}
+
+type AdminUser = { id: string; username: string; createdAt: string };
+type LoginLog = { id: string; username: string; ip: string | null; success: boolean; createdAt: string };
+
+function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (t: Toast) => void }) {
+  const [tab, setTab] = useState<'users' | 'logs'>('users');
+  const [userList, setUserList] = useState<AdminUser[]>([]);
+  const [logs, setLogs] = useState<LoginLog[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [resetTarget, setResetTarget] = useState<AdminUser | undefined>();
+  const [newPwd, setNewPwd] = useState('');
+  const [resetting, setResetting] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    const p = tab === 'users'
+      ? api.get<AdminUser[]>('/admin/users').then(setUserList)
+      : api.get<LoginLog[]>('/admin/login-logs').then(setLogs);
+    p.catch((e) => showToast({ type: 'error', message: e instanceof Error ? e.message : '加载失败' }))
+      .finally(() => setLoading(false));
+  }, [tab]);
+
+  const handleReset = async () => {
+    if (!resetTarget || !newPwd || newPwd.length < 6) return;
+    setResetting(true);
+    try {
+      await api.post(`/admin/users/${resetTarget.id}/reset-password`, { newPassword: newPwd });
+      showToast({ type: 'success', message: `${resetTarget.username} 密码已重置` });
+      setResetTarget(undefined);
+      setNewPwd('');
+    } catch (e) {
+      showToast({ type: 'error', message: e instanceof Error ? e.message : '重置失败' });
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  return (
+    <div className="admin-page">
+      <header className="admin-header">
+        <div>
+          <h1>管理员后台</h1>
+          <p>老于智慧仓管</p>
+        </div>
+        <button
+          className="admin-logout"
+          onClick={async () => {
+            try { await api.post('/auth/logout', { refreshToken: session.refreshToken }); } catch { /* ignore */ }
+            setSession(undefined);
+          }}
+        >退出</button>
+      </header>
+
+      <div className="admin-tabs">
+        <button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')}>用户管理</button>
+        <button className={tab === 'logs' ? 'active' : ''} onClick={() => setTab('logs')}>登录日志</button>
+      </div>
+
+      {loading && <div className="admin-state">加载中...</div>}
+
+      {!loading && tab === 'users' && (
+        <div className="admin-list">
+          {userList.length === 0 && <div className="admin-state">暂无用户</div>}
+          {userList.map((u) => (
+            <div key={u.id} className="admin-row">
+              <div>
+                <strong>{u.username}</strong>
+                <small>注册于 {new Date(u.createdAt).toLocaleDateString('zh-CN')}</small>
+              </div>
+              <button className="admin-action" onClick={() => { setResetTarget(u); setNewPwd(''); }}>重置密码</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!loading && tab === 'logs' && (
+        <div className="admin-list">
+          {logs.length === 0 && <div className="admin-state">暂无日志</div>}
+          {logs.map((log) => (
+            <div key={log.id} className={`admin-row ${log.success ? '' : 'admin-row-fail'}`}>
+              <div>
+                <strong>{log.username}</strong>
+                <small>{new Date(log.createdAt).toLocaleString('zh-CN')} · {log.ip ?? '—'}</small>
+              </div>
+              <span className={`admin-badge ${log.success ? 'success' : 'fail'}`}>{log.success ? '成功' : '失败'}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {resetTarget && (
+        <div className="admin-modal-backdrop" onClick={() => setResetTarget(undefined)}>
+          <div className="admin-modal" onClick={(e) => e.stopPropagation()}>
+            <h2>重置密码</h2>
+            <p>账号：<strong>{resetTarget.username}</strong></p>
+            <input
+              className="admin-input"
+              type="password"
+              placeholder="新密码（至少 6 位）"
+              value={newPwd}
+              onChange={(e) => setNewPwd(e.target.value)}
+              autoFocus
+            />
+            <div className="admin-modal-actions">
+              <button className="admin-cancel" onClick={() => setResetTarget(undefined)}>取消</button>
+              <button className="admin-confirm" disabled={newPwd.length < 6 || resetting} onClick={handleReset}>
+                {resetting ? '提交中...' : '确认重置'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
