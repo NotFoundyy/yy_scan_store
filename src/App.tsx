@@ -1453,7 +1453,7 @@ function ProfilePanel({
           }
           setSaving(true);
           try {
-            const next = await api.patch<AuthSession>('/auth/profile', {
+            const next = await api.post<AuthSession>('/auth/profile/update', {
               currentPassword,
               username,
               newPassword: newPassword || undefined,

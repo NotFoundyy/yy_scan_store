@@ -125,7 +125,7 @@ app.post('/auth/logout', async (request) => {
   return { ok: true };
 });
 
-app.patch('/auth/profile', { preHandler: requireAuth }, async (request, reply) => {
+app.post('/auth/profile/update', { preHandler: requireAuth }, async (request, reply) => {
   const input = z.object({
     currentPassword: z.string().min(6).max(128),
     username: z.string().regex(/^[A-Za-z0-9_]{2,32}$/).optional(),
@@ -193,7 +193,7 @@ app.post('/boxes', { preHandler: requireAuth }, async (request) => {
   return box;
 });
 
-app.patch('/boxes/:id', { preHandler: requireAuth }, async (request, reply) => {
+app.post('/boxes/:id/update', { preHandler: requireAuth }, async (request, reply) => {
   const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
   if (!(await ownBox(request.user.id, id))) return reply.status(404).send({ message: '箱子不存在' });
   const input = boxInput.partial().parse(request.body);
@@ -202,7 +202,7 @@ app.patch('/boxes/:id', { preHandler: requireAuth }, async (request, reply) => {
   return box;
 });
 
-app.delete('/boxes/:id', { preHandler: requireAuth }, async (request, reply) => {
+app.post('/boxes/:id/delete', { preHandler: requireAuth }, async (request, reply) => {
   const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
   if (!(await ownBox(request.user.id, id))) return reply.status(404).send({ message: '箱子不存在' });
   await db.delete(boxes).where(eq(boxes.id, id));
@@ -223,7 +223,7 @@ app.post('/items', { preHandler: requireAuth }, async (request, reply) => {
   return item;
 });
 
-app.patch('/items/:id', { preHandler: requireAuth }, async (request, reply) => {
+app.post('/items/:id/update', { preHandler: requireAuth }, async (request, reply) => {
   const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
   const [current] = await db.select().from(items).where(eq(items.id, id));
   if (!current || !(await ownBox(request.user.id, current.boxId))) return reply.status(404).send({ message: '物品不存在' });
@@ -249,7 +249,7 @@ app.patch('/items/:id', { preHandler: requireAuth }, async (request, reply) => {
   return item;
 });
 
-app.delete('/items/:id', { preHandler: requireAuth }, async (request, reply) => {
+app.post('/items/:id/delete', { preHandler: requireAuth }, async (request, reply) => {
   const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
   const [item] = await db.select().from(items).where(eq(items.id, id));
   if (!item || !(await ownBox(request.user.id, item.boxId))) return reply.status(404).send({ message: '物品不存在' });
@@ -307,7 +307,7 @@ app.post('/items/:id/movements', { preHandler: requireAuth }, async (request, re
   }
 });
 
-app.patch('/movements/:id', { preHandler: requireAuth }, async (request, reply) => {
+app.post('/movements/:id/update', { preHandler: requireAuth }, async (request, reply) => {
   const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
   const input = z.object({
     quantity: z.number().int().min(0),

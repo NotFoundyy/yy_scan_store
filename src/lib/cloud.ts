@@ -49,7 +49,7 @@ export const cloudCreateBox = async (input: Omit<Box, 'shareToken'>) => {
 };
 export const cloudUpdateBox = async (id: string, input: Partial<Box>) => {
   try {
-    const box = await api.patch<Box>(`/boxes/${id}`, input);
+    const box = await api.post<Box>(`/boxes/${id}/update`, input);
     invalidateCloudData();
     return box;
   } catch (error) {
@@ -65,7 +65,7 @@ export const cloudUpdateBox = async (id: string, input: Partial<Box>) => {
 };
 export const cloudDeleteBox = async (id: string) => {
   try {
-    await api.delete(`/boxes/${id}`);
+    await api.post(`/boxes/${id}/delete`);
     invalidateCloudData();
   } catch (error) {
     if (!shouldQueue(error)) throw error;
@@ -107,7 +107,7 @@ export const cloudCreateItem = async (input: Item) => {
 };
 export const cloudUpdateItem = async (id: string, input: Partial<Item>) => {
   try {
-    const item = await api.patch<Item>(`/items/${id}`, input);
+    const item = await api.post<Item>(`/items/${id}/update`, input);
     invalidateCloudData();
     return item;
   } catch (error) {
@@ -123,7 +123,7 @@ export const cloudUpdateItem = async (id: string, input: Partial<Item>) => {
 };
 export const cloudDeleteItem = async (id: string) => {
   try {
-    await api.delete(`/items/${id}`);
+    await api.post(`/items/${id}/delete`);
     invalidateCloudData();
   } catch (error) {
     if (!shouldQueue(error)) throw error;
@@ -207,7 +207,7 @@ export const cloudUpdateMovement = async (
   id: string,
   input: { quantity: number; teamName?: string; note?: string; createdAt: string; imageDataUrl?: string },
 ) => {
-  await api.patch(`/movements/${id}`, input);
+  await api.post(`/movements/${id}/update`, input);
   invalidateCloudData();
   await getCloudData(true);
 };
@@ -236,11 +236,11 @@ export const flushSyncQueue = async () => {
       const payload = entry.payload as Record<string, any>;
       if (entry.type === 'stock-change') await api.post(`/items/${payload.itemId}/movements`, payload.operation);
       else if (entry.type === 'box-create') await api.post('/boxes', payload.input);
-      else if (entry.type === 'box-update') await api.patch(`/boxes/${payload.id}`, payload.input);
-      else if (entry.type === 'box-delete') await api.delete(`/boxes/${payload.id}`);
+      else if (entry.type === 'box-update') await api.post(`/boxes/${payload.id}/update`, payload.input);
+      else if (entry.type === 'box-delete') await api.post(`/boxes/${payload.id}/delete`);
       else if (entry.type === 'item-create') await api.post('/items', payload.input);
-      else if (entry.type === 'item-update') await api.patch(`/items/${payload.id}`, payload.input);
-      else if (entry.type === 'item-delete') await api.delete(`/items/${payload.id}`);
+      else if (entry.type === 'item-update') await api.post(`/items/${payload.id}/update`, payload.input);
+      else if (entry.type === 'item-delete') await api.post(`/items/${payload.id}/delete`);
       else continue;
       await db.delete('syncQueue', entry.id);
     } catch (error) {
