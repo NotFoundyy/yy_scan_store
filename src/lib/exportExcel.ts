@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx-js-style';
 import type { Box, Item, StockMovement } from '../types/domain';
 import { compactDateTime, formatDateOnly } from './dates';
+import { compareBoxCodes } from './ids';
 import { isNativeApp, shareBase64File } from './nativeFiles';
 
 const invalidFileChars = /[<>:"/\\|?*\u0000-\u001f]/g;
@@ -138,9 +139,15 @@ const ensureCell = (worksheet: XLSX.WorkSheet, row: number, col: number) => {
   return worksheet[cellRef];
 };
 
+const charWidth = (str: string) =>
+  Array.from(str).reduce((w, ch) => w + (/[一-鿿　-ヿ＀-￯]/.test(ch) ? 2 : 1), 0);
+
 const estimateColumnWidth = (values: unknown[], min: number, max: number) => {
-  const longest = values.reduce<number>((length, value) => Math.max(length, String(value ?? '').length), 0);
-  return Math.min(max, Math.max(min, Math.ceil(longest * 1.5)));
+  const longest = values.reduce<number>((w, value) => {
+    const lines = String(value ?? '').split('\n');
+    return Math.max(w, ...lines.map(charWidth));
+  }, 0);
+  return Math.min(max, Math.max(min, Math.ceil(longest * 1.1)));
 };
 
 const applySheetLayout = (worksheet: XLSX.WorkSheet, rowCount: number, outColumnCount: number, data: unknown[][]) => {
@@ -162,7 +169,7 @@ const applySheetLayout = (worksheet: XLSX.WorkSheet, rowCount: number, outColumn
     if (col === 4) return { wch: 13 };
     if (col >= 5 && col < stockCol) return { wch: estimateColumnWidth(values, 12, 18) };
     if (col === stockCol) return { wch: 12 };
-    return { wch: estimateColumnWidth(values, 12, 22) };
+    return { wch: estimateColumnWidth(values, 12, 36) };
   });
   worksheet['!rows'] = [
     { hpt: 28 },
@@ -489,7 +496,9 @@ export const exportExcel = async (input: {
   fileName: string;
   allSelected: boolean;
 }): Promise<ExportResult> => {
-  const selectedBoxes = input.boxes.filter((box) => input.selectedBoxIds.includes(box.id));
+  const selectedBoxes = input.boxes
+    .filter((box) => input.selectedBoxIds.includes(box.id))
+    .sort((a, b) => compareBoxCodes(a.code, b.code));
   const workbook = XLSX.utils.book_new();
   const usedNames = new Set<string>();
 

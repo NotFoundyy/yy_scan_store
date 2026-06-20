@@ -24,6 +24,12 @@ android/app/build/
 android/local.properties
 android/app/src/main/assets/public/
 
+# Android signing keys — never commit
+*.jks
+*.keystore
+keystore.properties
+key.properties
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

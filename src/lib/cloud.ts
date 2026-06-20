@@ -227,38 +227,44 @@ export const parseShareQrValue = (value: string) => {
   return match ? { boxId: match[1]!, token: match[2]! } : undefined;
 };
 
+let flushing = false;
 export const flushSyncQueue = async () => {
-  if (!getSession() || !navigator.onLine) return;
-  const db = await getDb();
-  const queued = await db.getAll('syncQueue');
-  for (const entry of queued.sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
-    try {
-      const payload = entry.payload as Record<string, any>;
-      if (entry.type === 'stock-change') await api.post(`/items/${payload.itemId}/movements`, payload.operation);
-      else if (entry.type === 'box-create') await api.post('/boxes', payload.input);
-      else if (entry.type === 'box-update') await api.post(`/boxes/${payload.id}/update`, payload.input);
-      else if (entry.type === 'box-delete') await api.post(`/boxes/${payload.id}/delete`);
-      else if (entry.type === 'item-create') await api.post('/items', payload.input);
-      else if (entry.type === 'item-update') await api.post(`/items/${payload.id}/update`, payload.input);
-      else if (entry.type === 'item-delete') await api.post(`/items/${payload.id}/delete`);
-      else continue;
-      await db.delete('syncQueue', entry.id);
-    } catch (error) {
-      const status = typeof error === 'object' && error && 'status' in error ? Number(error.status) : 0;
-      if (status >= 400 && status < 500) {
-        await db.put('syncConflicts', {
-          id: entry.id,
-          type: entry.type,
-          payload: entry.payload,
-          reason: error instanceof Error ? error.message : '库存冲突',
-          createdAt: nowIso(),
-        });
+  if (flushing || !getSession() || !navigator.onLine) return;
+  flushing = true;
+  try {
+    const db = await getDb();
+    const queued = await db.getAll('syncQueue');
+    for (const entry of queued.sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+      try {
+        const payload = entry.payload as Record<string, any>;
+        if (entry.type === 'stock-change') await api.post(`/items/${payload.itemId}/movements`, payload.operation);
+        else if (entry.type === 'box-create') await api.post('/boxes', payload.input);
+        else if (entry.type === 'box-update') await api.post(`/boxes/${payload.id}/update`, payload.input);
+        else if (entry.type === 'box-delete') await api.post(`/boxes/${payload.id}/delete`);
+        else if (entry.type === 'item-create') await api.post('/items', payload.input);
+        else if (entry.type === 'item-update') await api.post(`/items/${payload.id}/update`, payload.input);
+        else if (entry.type === 'item-delete') await api.post(`/items/${payload.id}/delete`);
+        else continue;
         await db.delete('syncQueue', entry.id);
-        continue;
+      } catch (error) {
+        const status = typeof error === 'object' && error && 'status' in error ? Number(error.status) : 0;
+        if (status >= 400 && status < 500) {
+          await db.put('syncConflicts', {
+            id: entry.id,
+            type: entry.type,
+            payload: entry.payload,
+            reason: error instanceof Error ? error.message : '库存冲突',
+            createdAt: nowIso(),
+          });
+          await db.delete('syncQueue', entry.id);
+          continue;
+        }
+        await db.put('syncQueue', { ...entry, attempts: entry.attempts + 1 });
+        break;
       }
-      await db.put('syncQueue', { ...entry, attempts: entry.attempts + 1 });
-      break;
     }
+  } finally {
+    flushing = false;
   }
 };
 

@@ -8,7 +8,7 @@ import { createSession, createShareToken, hashPassword, requireAdmin, requireAut
 import { db, rawPool } from './db.js';
 import { boxes, items, loginLogs, movements, sessions, syncOperations, users } from './schema.js';
 
-const app = Fastify({ logger: true, trustProxy: true });
+const app = Fastify({ logger: true, trustProxy: true, bodyLimit: 50 * 1024 * 1024 });
 await app.register(cors, { origin: process.env.CORS_ORIGIN === '*' ? true : process.env.CORS_ORIGIN });
 await app.register(jwt, { secret: process.env.JWT_SECRET! });
 

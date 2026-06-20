@@ -1,14 +1,16 @@
 import type { Box } from '../types/domain';
 import { getDb } from '../lib/db';
 import { nowIso } from '../lib/dates';
-import { createBoxCode, createId } from '../lib/ids';
+import { compareBoxCodes, createBoxCode, createId } from '../lib/ids';
 import { cloudCreateBox, cloudDeleteBox, cloudEnabled, cloudUpdateBox, getCloudData } from '../lib/cloud';
 
 export const listBoxes = async (includeArchived = false) => {
   if (cloudEnabled()) {
     try {
       const data = await getCloudData();
-      return data.boxes.filter((box) => includeArchived || !box.archived);
+      return data.boxes
+        .filter((box) => includeArchived || !box.archived)
+        .sort((a, b) => compareBoxCodes(a.code, b.code));
     } catch {
       // Use the last local cache while offline.
     }
@@ -17,7 +19,7 @@ export const listBoxes = async (includeArchived = false) => {
   const boxes = await db.getAll('boxes');
   return boxes
     .filter((box) => includeArchived || !box.archived)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    .sort((a, b) => compareBoxCodes(a.code, b.code));
 };
 
 export const getBox = async (id: string) => {

@@ -31,7 +31,7 @@ import { createQrDataUrl, createQrLabelDataUrl } from './lib/qr';
 import { defaultExportFileName, defaultMovementExportFileName, exportExcel, exportMovementsExcel } from './lib/exportExcel';
 import { exportBackup, parseBackupFile, restoreBackup } from './lib/backup';
 import { dataUrlToBase64, isNativeApp, saveDataUrlPhotoToGallery, shareBase64File } from './lib/nativeFiles';
-import { displayBoxCode } from './lib/ids';
+import { compareBoxCodes, displayBoxCode } from './lib/ids';
 import { archiveBox, createBox, deleteBox, getBox, getBoxByCode, listBoxes, updateBox } from './repositories/boxes';
 import { importBoxesWithItems } from './repositories/importBoxes';
 import { changeStock, createItem, deleteItem, listAllItems, listItemsByBox, updateItem } from './repositories/items';
@@ -85,8 +85,7 @@ const navItems: Array<{ route: Route; label: string; icon: typeof Boxes }> = [
 const quantityText = (item: Item) => `${item.quantity}${item.unit ? ` ${item.unit}` : ''}`;
 const itemTitle = (item?: Item) => item?.name ?? '已删除物品';
 const DEFAULT_LOW_STOCK_THRESHOLD = 2;
-const COMMON_UNITS = ['个', '套', '米', '箱', '瓶', '件', '片', '根', '把', '只', '盒', '付'];
-const naturalNameCompare = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' }).compare;
+const COMMON_UNITS = ['个', '套', '米', '箱', '瓶', '件', '片', '根', '把', '只', '盒', '付', '台', '双', '包'];
 const isLowStock = (item: Item, fallbackThreshold: number) => item.quantity <= (item.lowStockThreshold ?? fallbackThreshold);
 const todayKey = () => new Date().toLocaleDateString('sv-SE');
 const movementTypeText = (type: StockMovement['type']) => (type === 'out' ? '出库' : type === 'in' ? '入库' : '调整');
@@ -159,8 +158,7 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadAll = async () => {
-    setLoading(true);
+  const syncData = async () => {
     const [boxRows, itemRows, movementRows] = await Promise.all([
       listBoxes(),
       listAllItems(),
@@ -175,18 +173,39 @@ export function App() {
       setLastSyncTime(now);
       localStorage.setItem('last-sync-time', now.toISOString());
     }
-    setLoading(false);
+  };
+
+  const loadAll = async () => {
+    setLoading(true);
+    try {
+      await syncData();
+    } finally {
+      setLoading(false);
+    }
   };
 
   const navigate = (next: Route) => {
-    window.location.hash = routeToHash(next);
+    history.pushState({ route: next }, '', routeToHash(next));
+    setRoute(next);
   };
 
   useEffect(() => {
-    const handleHash = () => setRoute(parseRoute());
-    window.addEventListener('hashchange', handleHash);
+    // 记录初始状态，确保 popstate 始终有 state 可恢复
+    history.replaceState({ route: parseRoute() }, '', window.location.href);
+
+    const handlePopState = (event: PopStateEvent) => {
+      if (event.state?.route) {
+        setRoute(event.state.route as Route);
+      } else {
+        // 弹到了 app 启动前的历史项（无 state）——推回首页 sentinel，防止下一次返回退出 app
+        history.pushState({ route: { name: 'home' } }, '', '#/');
+        setRoute({ name: 'home' });
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
     loadAll().catch((error) => showToast({ type: 'error', message: error.message }));
-    return () => window.removeEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
   useEffect(() => onSessionChange(() => {
@@ -200,7 +219,7 @@ export function App() {
   useEffect(() => {
     const update = () => {
       setOnline(navigator.onLine);
-      if (navigator.onLine && getSession()) loadAll().catch(() => undefined);
+      if (navigator.onLine && getSession()) syncData().catch(() => undefined);
     };
     window.addEventListener('online', update);
     window.addEventListener('offline', update);
@@ -208,6 +227,11 @@ export function App() {
       window.removeEventListener('online', update);
       window.removeEventListener('offline', update);
     };
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => syncData().catch(() => undefined), 5 * 60 * 1000);
+    return () => clearInterval(timer);
   }, []);
 
   const currentBox = route.name === 'box' || route.name === 'qr' ? boxes.find((box) => box.id === route.id) : undefined;
@@ -252,7 +276,7 @@ export function App() {
             items={items}
             movements={movements}
             navigate={navigate}
-            refresh={loadAll}
+            refresh={syncData}
             showToast={showToast}
             lowStockThreshold={lowStockThreshold}
             online={online}
@@ -264,7 +288,7 @@ export function App() {
             boxes={boxes}
             items={items}
             navigate={navigate}
-            refresh={loadAll}
+            refresh={syncData}
             showToast={showToast}
             lowStockThreshold={lowStockThreshold}
           />
@@ -274,13 +298,13 @@ export function App() {
             box={currentBox}
             movements={movements}
             navigate={navigate}
-            refresh={loadAll}
+            refresh={syncData}
             showToast={showToast}
             lowStockThreshold={lowStockThreshold}
           />
         )}
         {!loading && route.name === 'qr' && (
-          <QrPage box={currentBox} navigate={navigate} showToast={showToast} refresh={loadAll} online={online} />
+          <QrPage box={currentBox} navigate={navigate} showToast={showToast} refresh={syncData} online={online} />
         )}
         {!loading && route.name === 'scan' && <ScanPage navigate={navigate} showToast={showToast} />}
         {!loading && route.name === 'shared' && <SharedBoxPage id={route.id} token={route.token} navigate={navigate} showToast={showToast} />}
@@ -290,7 +314,7 @@ export function App() {
             items={items}
             movements={movements}
             showToast={showToast}
-            refresh={loadAll}
+            refresh={syncData}
             session={session!}
             online={online}
             syncStatus={syncStatus}
@@ -669,18 +693,39 @@ function HomePage({
   lastSyncTime?: Date;
 }) {
   const [creating, setCreating] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const lowStockCount = items.filter((item) => isLowStock(item, lowStockThreshold)).length;
   const todayMovements = movements.filter((movement) => movement.createdAt.slice(0, 10) === todayKey()).length;
   const todayIn = movements.filter((movement) => movement.createdAt.slice(0, 10) === todayKey() && movement.type === 'in').length;
   const todayOut = movements.filter((movement) => movement.createdAt.slice(0, 10) === todayKey() && movement.type === 'out').length;
   const visibleBoxes = useMemo(() => boxes.slice(0, 3), [boxes]);
 
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return items
+      .filter((item) =>
+        item.name.toLowerCase().includes(q) ||
+        (item.specModel ?? '').toLowerCase().includes(q) ||
+        (item.note ?? '').toLowerCase().includes(q),
+      )
+      .map((item) => ({ item, box: boxes.find((b) => b.id === item.boxId) }))
+      .sort((a, b) => compareBoxCodes(a.box?.code ?? '', b.box?.code ?? ''));
+  }, [searchQuery, items, boxes]);
+
+  const closeSearch = () => { setSearchOpen(false); setSearchQuery(''); };
+
   const handleCreate = async (input: { name: string; note?: string; imageDataUrl?: string }) => {
-    const box = await createBox(input);
-    await refresh();
-    setCreating(false);
-    showToast({ type: 'success', message: `已创建 ${box.name}` });
-    navigate({ name: 'box', id: box.id });
+    try {
+      const box = await createBox(input);
+      await refresh();
+      setCreating(false);
+      showToast({ type: 'success', message: `已创建 ${box.name}` });
+      navigate({ name: 'box', id: box.id });
+    } catch (error) {
+      showToast({ type: 'error', message: error instanceof Error ? error.message : '创建失败' });
+    }
   };
 
   return (
@@ -697,7 +742,55 @@ function HomePage({
               : '离线使用，联网后自动同步'}
           </p>
         </div>
+        <button className="ghost icon-only" onClick={() => setSearchOpen(true)} aria-label="搜索物品">
+          <Search size={22} />
+        </button>
       </header>
+
+      {searchOpen && (
+        <div className="search-overlay">
+          <div className="search-bar">
+            <Search size={18} />
+            <input
+              autoFocus
+              placeholder="搜索物品名称、规格..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            <button onClick={closeSearch}>取消</button>
+          </div>
+          <div className="search-results">
+            {searchQuery.trim() === '' ? (
+              <p className="search-hint">输入物品名称或规格型号</p>
+            ) : searchResults.length === 0 ? (
+              <p className="search-hint">未找到"<b>{searchQuery.trim()}</b>"</p>
+            ) : (
+              <>
+                <p className="search-count">{searchResults.length} 个结果</p>
+                {searchResults.map(({ item, box }) => (
+                  <div
+                    key={item.id}
+                    className="search-result-row"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => { if (box) navigate({ name: 'box', id: box.id }); closeSearch(); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { if (box) navigate({ name: 'box', id: box.id }); closeSearch(); } }}
+                  >
+                    <div className="search-result-main">
+                      <strong>{item.name}</strong>
+                      {item.specModel && <span className="search-spec">{item.specModel}</span>}
+                    </div>
+                    <div className="search-result-meta">
+                      <span className="search-box-tag">{box?.name ?? '未知箱子'}</span>
+                      <span className={`search-qty${isLowStock(item, lowStockThreshold) ? ' low' : ''}`}>{quantityText(item)}</span>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="overview-strip">
         <StatPill icon={<Boxes size={28} />} label="箱子" value={boxes.length} />
@@ -870,15 +963,19 @@ function BoxListPage({
       const statusMatched = statusFilter === 'all' || (statusFilter === 'low' ? low : !low);
       return textMatched && statusMatched;
     });
-    return rows.sort((a, b) => naturalNameCompare(a.name, b.name));
+    return rows.sort((a, b) => compareBoxCodes(a.code, b.code));
   }, [boxes, itemsByBox, lowStockThreshold, query, statusFilter]);
 
   const handleCreate = async (input: { name: string; note?: string; imageDataUrl?: string }) => {
-    const box = await createBox(input);
-    await refresh();
-    setCreating(false);
-    showToast({ type: 'success', message: `已创建 ${box.name}` });
-    navigate({ name: 'box', id: box.id });
+    try {
+      const box = await createBox(input);
+      await refresh();
+      setCreating(false);
+      showToast({ type: 'success', message: `已创建 ${box.name}` });
+      navigate({ name: 'box', id: box.id });
+    } catch (error) {
+      showToast({ type: 'error', message: error instanceof Error ? error.message : '创建失败' });
+    }
   };
 
   return (
@@ -943,9 +1040,7 @@ function BoxListPage({
           })}
         </div>
       )}
-      <button className="fab" onClick={() => setCreating(true)} aria-label="新建箱子">
-        <Plus />
-      </button>
+      <Fab onClick={() => setCreating(true)} />
       {creating && (
         <BoxFormDialog title="新建箱子" onCancel={() => setCreating(false)} onSubmit={handleCreate} />
       )}
@@ -1076,12 +1171,7 @@ function BoxDetailPage({
         </div>
       </section>
 
-      <div className="detail-action-row">
-        <button className="primary full" onClick={() => setEditingItem('new')}>
-          <PackagePlus size={18} />
-          添加物品
-        </button>
-      </div>
+      <Fab onClick={() => setEditingItem('new')} />
 
       {boxItems.length === 0 ? (
         <EmptyState
@@ -1134,10 +1224,14 @@ function BoxDetailPage({
           box={box}
           onCancel={() => setEditingBox(false)}
           onSubmit={async (input) => {
-            await updateBox(box, input);
-            await reload();
-            setEditingBox(false);
-            showToast({ type: 'success', message: '箱子已更新' });
+            try {
+              await updateBox(box, input);
+              await reload();
+              setEditingBox(false);
+              showToast({ type: 'success', message: '箱子已更新' });
+            } catch (error) {
+              showToast({ type: 'error', message: error instanceof Error ? error.message : '操作失败' });
+            }
           }}
         />
       )}
@@ -1147,15 +1241,28 @@ function BoxDetailPage({
           item={editingItem === 'new' ? undefined : editingItem}
           onCancel={() => setEditingItem(undefined)}
           onSubmit={async (input) => {
-            if (editingItem === 'new') {
-              await createItem({ ...input, boxId: box.id });
-              showToast({ type: 'success', message: '物品已添加' });
-            } else {
-              await updateItem(editingItem, input);
-              showToast({ type: 'success', message: '物品已更新' });
+            try {
+              if (editingItem === 'new') {
+                await createItem({ ...input, boxId: box.id });
+                showToast({ type: 'success', message: '物品已添加' });
+              } else {
+                await updateItem(editingItem, input);
+                showToast({ type: 'success', message: '物品已更新' });
+              }
+              await reload();
+              setEditingItem(undefined);
+            } catch (error) {
+              showToast({ type: 'error', message: error instanceof Error ? error.message : '操作失败' });
             }
-            await reload();
-            setEditingItem(undefined);
+          }}
+          onContinue={async (input) => {
+            try {
+              await createItem({ ...input, boxId: box.id });
+              await loadBoxData();
+              showToast({ type: 'success', message: '已添加，继续填写下一个' });
+            } catch (error) {
+              showToast({ type: 'error', message: error instanceof Error ? error.message : '操作失败' });
+            }
           }}
         />
       )}
@@ -1165,16 +1272,20 @@ function BoxDetailPage({
           type={stockAction.type}
           onCancel={() => setStockAction(undefined)}
           onSubmit={async (quantity, input) => {
-            await changeStock(stockAction.item, stockAction.type, quantity, input);
-            await reload();
-            setStockAction(undefined);
-            showToast({
-              type: 'success',
-              message: `已${stockAction.type === 'in' ? '入库' : '出库'} ${quantityText({
-                ...stockAction.item,
-                quantity,
-              })}`,
-            });
+            try {
+              await changeStock(stockAction.item, stockAction.type, quantity, input);
+              await reload();
+              setStockAction(undefined);
+              showToast({
+                type: 'success',
+                message: `已${stockAction.type === 'in' ? '入库' : '出库'} ${quantityText({
+                  ...stockAction.item,
+                  quantity,
+                })}`,
+              });
+            } catch (error) {
+              showToast({ type: 'error', message: error instanceof Error ? error.message : '操作失败' });
+            }
           }}
         />
       )}
@@ -1352,12 +1463,17 @@ function ScanPage({ navigate, showToast }: { navigate: (route: Route) => void; s
           setStatus('浏览器不支持相机，可上传图片或输入箱码。');
           return;
         }
-        controlsRef.current = await reader.decodeFromVideoDevice(undefined, videoRef.current, (result) => {
+        const controls = await reader.decodeFromVideoDevice(undefined, videoRef.current, (result) => {
           if (result && !stopped) {
             stopped = true;
             openCode(result.getText()).catch((error) => showToast({ type: 'error', message: error.message }));
           }
         });
+        controlsRef.current = controls;
+        if (stopped) {
+          controls.stop();
+          return;
+        }
         setStatus('请将箱子二维码放入取景框');
       } catch (error) {
         if (error instanceof DOMException && error.name === 'NotAllowedError') {
@@ -2059,9 +2175,11 @@ function MovementHistoryPanel({
                 <div>
                   <strong>
                     {movementTypeText(movement.type)} · {itemTitle(item)}
-                    <button className="inline-edit-btn" onClick={() => setEditingMovement(movement)}>
-                      编辑
-                    </button>
+                    {movement.type !== 'adjust' && (
+                      <button className="inline-edit-btn" onClick={() => setEditingMovement(movement)}>
+                        编辑
+                      </button>
+                    )}
                   </strong>
                   <span>
                     {box?.name ?? '未知箱子'} · {movement.teamName ? `${movement.teamName} · ` : ''}
@@ -2237,10 +2355,15 @@ function BackupPanel({
                 className="danger"
                 onClick={async () => {
                   if (!confirm('再次确认：覆盖当前本地数据？')) return;
-                  await restoreBackup(pendingBackup);
-                  await refresh();
-                  setPendingBackup(undefined);
-                  showToast({ type: 'success', message: '备份已恢复' });
+                  try {
+                    await restoreBackup(pendingBackup);
+                    await refresh();
+                    showToast({ type: 'success', message: '备份已恢复' });
+                  } catch (error) {
+                    showToast({ type: 'error', message: error instanceof Error ? error.message : '恢复失败' });
+                  } finally {
+                    setPendingBackup(undefined);
+                  }
                 }}
               >
                 覆盖恢复
@@ -2250,6 +2373,14 @@ function BackupPanel({
         </div>
       )}
     </div>
+  );
+}
+
+function Fab({ onClick }: { onClick: () => void }) {
+  return (
+    <button className="fab" onClick={onClick} aria-label="添加">
+      <Plus size={26} />
+    </button>
   );
 }
 
@@ -2276,8 +2407,11 @@ function BoxFormDialog({
           event.preventDefault();
           if (!name.trim()) return;
           setSaving(true);
-          await onSubmit({ name, note, imageDataUrl });
-          setSaving(false);
+          try {
+            await onSubmit({ name, note, imageDataUrl });
+          } finally {
+            setSaving(false);
+          }
         }}
       >
         <label className="field">
@@ -2307,11 +2441,22 @@ function ItemFormDialog({
   item,
   onCancel,
   onSubmit,
+  onContinue,
 }: {
   title: string;
   item?: Item;
   onCancel: () => void;
   onSubmit: (input: {
+    name: string;
+    specModel?: string;
+    quantity: number;
+    unit?: string;
+    lowStockThreshold?: number;
+    imageDataUrl?: string;
+    note?: string;
+    createdAt?: string;
+  }) => Promise<void>;
+  onContinue?: (input: {
     name: string;
     specModel?: string;
     quantity: number;
@@ -2334,24 +2479,45 @@ function ItemFormDialog({
   const numericQuantity = quantity.trim() === '' ? Number.NaN : Number(quantity);
   const numericLowStockThreshold = Number(lowStockThreshold);
 
+  const buildInput = () => ({
+    name,
+    specModel,
+    quantity: numericQuantity,
+    unit,
+    lowStockThreshold: Number.isFinite(numericLowStockThreshold) && numericLowStockThreshold >= 0 ? numericLowStockThreshold : DEFAULT_LOW_STOCK_THRESHOLD,
+    imageDataUrl,
+    note,
+    createdAt: item ? undefined : fromDatetimeLocal(createdAt),
+  });
+
+  const isValid = name.trim() && Number.isFinite(numericQuantity) && numericQuantity >= 0 && numericLowStockThreshold >= 0;
+
+  const handleContinue = async () => {
+    if (!isValid || !onContinue) return;
+    setSaving(true);
+    try {
+      await onContinue(buildInput());
+      setSpecModel('');
+      setQuantity('');
+      setNote('');
+      setImageDataUrl('');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <Dialog title={title} onCancel={onCancel}>
       <form
         onSubmit={async (event) => {
           event.preventDefault();
-          if (!name.trim() || !Number.isFinite(numericQuantity) || numericQuantity < 0) return;
+          if (!isValid) return;
           setSaving(true);
-          await onSubmit({
-            name,
-            specModel,
-            quantity: numericQuantity,
-            unit,
-            lowStockThreshold: Number.isFinite(numericLowStockThreshold) && numericLowStockThreshold >= 0 ? numericLowStockThreshold : DEFAULT_LOW_STOCK_THRESHOLD,
-            imageDataUrl,
-            note,
-            createdAt: item ? undefined : fromDatetimeLocal(createdAt),
-          });
-          setSaving(false);
+          try {
+            await onSubmit(buildInput());
+          } finally {
+            setSaving(false);
+          }
         }}
       >
         <label className="field">
@@ -2398,11 +2564,16 @@ function ItemFormDialog({
           备注
           <textarea value={note} onChange={(event) => setNote(event.target.value)} />
         </label>
-        <div className="dialog-actions">
+        <div className={`dialog-actions${!item && onContinue ? ' three-cols' : ''}`}>
           <button type="button" className="ghost" onClick={onCancel}>
             取消
           </button>
-          <button className="primary" disabled={!name.trim() || !Number.isFinite(numericQuantity) || numericQuantity < 0 || numericLowStockThreshold < 0 || saving}>
+          {!item && onContinue && (
+            <button type="button" className="ghost" disabled={!isValid || saving} onClick={handleContinue}>
+              继续添加
+            </button>
+          )}
+          <button className="primary" disabled={!isValid || saving}>
             保存
           </button>
         </div>
@@ -2441,13 +2612,16 @@ function StockDialog({
   const submitStock = async () => {
     if (invalid) return;
     setSaving(true);
-    if (type === 'out' && teamName.trim()) {
-      const next = [teamName.trim(), ...teamSuggestions.filter((entry) => entry !== teamName.trim())].slice(0, 6);
-      localStorage.setItem('teamSuggestions', JSON.stringify(next));
-      setTeamSuggestions(next);
+    try {
+      if (type === 'out' && teamName.trim()) {
+        const next = [teamName.trim(), ...teamSuggestions.filter((entry) => entry !== teamName.trim())].slice(0, 6);
+        localStorage.setItem('teamSuggestions', JSON.stringify(next));
+        setTeamSuggestions(next);
+      }
+      await onSubmit(value, { note, teamName, imageDataUrl, createdAt: fromDatetimeLocal(createdAt) });
+    } finally {
+      setSaving(false);
     }
-    await onSubmit(value, { note, teamName, imageDataUrl, createdAt: fromDatetimeLocal(createdAt) });
-    setSaving(false);
   };
 
   return (
@@ -2559,10 +2733,112 @@ function CardPhoto({
   fallback: React.ReactNode;
 }) {
   const [previewing, setPreviewing] = useState(false);
+  const [saveLabel, setSaveLabel] = useState('');
+  const [scale, setScale] = useState(1);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+
+  const pinchRef = useRef<{ dist: number; scale: number } | null>(null);
+  const panRef = useRef<{ sx: number; sy: number; px: number; py: number } | null>(null);
+  const lastTapRef = useRef(0);
+  const didDragRef = useRef(false);
 
   if (!imageDataUrl) {
     return <span className={className} aria-hidden="true">{fallback}</span>;
   }
+
+  const resetZoom = () => { setScale(1); setPos({ x: 0, y: 0 }); };
+  const closeLightbox = () => { setPreviewing(false); resetZoom(); };
+
+  const handleSave = async (event: React.MouseEvent) => {
+    event.stopPropagation();
+    try {
+      if (isNativeApp()) {
+        await saveDataUrlPhotoToGallery({ dataUrl: imageDataUrl, fileName: `${alt}.jpg` });
+      } else {
+        const a = document.createElement('a');
+        a.href = imageDataUrl;
+        a.download = `${alt}.jpg`;
+        a.click();
+      }
+      setSaveLabel('已保存');
+    } catch {
+      setSaveLabel('保存失败');
+    }
+    setTimeout(() => setSaveLabel(''), 2000);
+  };
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pinchRef.current = { dist: Math.hypot(dx, dy), scale };
+      panRef.current = null;
+    } else if (e.touches.length === 1) {
+      panRef.current = { sx: e.touches[0].clientX, sy: e.touches[0].clientY, px: pos.x, py: pos.y };
+      didDragRef.current = false;
+    }
+  };
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    e.preventDefault();
+    if (e.touches.length === 2 && pinchRef.current) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const next = Math.min(5, Math.max(1, pinchRef.current.scale * (Math.hypot(dx, dy) / pinchRef.current.dist)));
+      setScale(next);
+      if (next <= 1) setPos({ x: 0, y: 0 });
+    } else if (e.touches.length === 1 && panRef.current && scale > 1) {
+      const dx = e.touches[0].clientX - panRef.current.sx;
+      const dy = e.touches[0].clientY - panRef.current.sy;
+      didDragRef.current = true;
+      setPos({ x: panRef.current.px + dx, y: panRef.current.py + dy });
+    }
+  };
+
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length === 0 && !didDragRef.current && pinchRef.current === null) {
+      const now = Date.now();
+      if (now - lastTapRef.current < 300) {
+        scale > 1 ? resetZoom() : setScale(2.5);
+      }
+      lastTapRef.current = now;
+    }
+    pinchRef.current = null;
+    panRef.current = null;
+  };
+
+  const onWheel = (e: React.WheelEvent) => {
+    e.stopPropagation();
+    const next = Math.min(5, Math.max(1, scale * (1 - e.deltaY * 0.001)));
+    setScale(next);
+    if (next <= 1) setPos({ x: 0, y: 0 });
+  };
+
+  const onImgMouseDown = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    panRef.current = { sx: e.clientX, sy: e.clientY, px: pos.x, py: pos.y };
+    didDragRef.current = false;
+  };
+
+  const onOverlayMouseMove = (e: React.MouseEvent) => {
+    if (panRef.current) {
+      const dx = e.clientX - panRef.current.sx;
+      const dy = e.clientY - panRef.current.sy;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) didDragRef.current = true;
+      if (scale > 1) setPos({ x: panRef.current.px + dx, y: panRef.current.py + dy });
+    }
+  };
+
+  const onOverlayMouseUp = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!didDragRef.current && scale === 1) closeLightbox();
+    panRef.current = null;
+  };
+
+  const onImgDblClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    scale > 1 ? resetZoom() : setScale(2.5);
+  };
 
   return (
     <>
@@ -2584,15 +2860,33 @@ function CardPhoto({
           role="dialog"
           aria-modal="true"
           aria-label={alt}
-          onClick={(event) => {
-            event.stopPropagation();
-            setPreviewing(false);
-          }}
+          onMouseMove={onOverlayMouseMove}
+          onMouseUp={onOverlayMouseUp}
+          onMouseLeave={() => { panRef.current = null; }}
+          onWheel={onWheel}
         >
-          <button type="button" className="photo-lightbox-close" aria-label="关闭照片" onClick={() => setPreviewing(false)}>
+          <button type="button" className="photo-lightbox-close" aria-label="关闭照片" onClick={closeLightbox}>
             ×
           </button>
-          <img src={imageDataUrl} alt={alt} onClick={(event) => event.stopPropagation()} />
+          <button type="button" className="photo-lightbox-save" aria-label="保存照片" onClick={handleSave}>
+            {saveLabel ? <span className="photo-lightbox-save-label">{saveLabel}</span> : <Download size={20} />}
+          </button>
+          <img
+            src={imageDataUrl}
+            alt={alt}
+            draggable={false}
+            style={{
+              transform: `translate(${pos.x}px, ${pos.y}px) scale(${scale})`,
+              transformOrigin: 'center',
+              cursor: scale > 1 ? 'grab' : 'default',
+              touchAction: 'none',
+            }}
+            onTouchStart={onTouchStart}
+            onTouchMove={onTouchMove}
+            onTouchEnd={onTouchEnd}
+            onMouseDown={onImgMouseDown}
+            onDoubleClick={onImgDblClick}
+          />
         </div>
       )}
     </>

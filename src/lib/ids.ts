@@ -17,3 +17,6 @@ export const createBoxCode = (boxes: Box[]) => {
 };
 
 export const displayBoxCode = (code: string) => code.replace(/^BOX-\d{8}-(\d+)$/, 'BOX-$1');
+
+const codeCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+export const compareBoxCodes = (a: string, b: string) => codeCollator.compare(a, b);
