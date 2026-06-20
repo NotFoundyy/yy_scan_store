@@ -271,6 +271,10 @@ button:disabled {
   padding: 22px 16px 104px;
 }
 
+.app-main.no-bottom-nav {
+  padding-bottom: calc(28px + env(safe-area-inset-bottom));
+}
+
 .toast {
   position: fixed;
   top: 12px;
@@ -1188,6 +1192,11 @@ button:disabled {
 .fab:active {
   transform: scale(0.91);
   box-shadow: 0 2px 8px rgba(22, 119, 255, 0.22);
+}
+
+/* 无底部标签栏的页面（如箱子详情），FAB 落到屏幕底部 */
+.no-bottom-nav .fab {
+  bottom: calc(24px + env(safe-area-inset-bottom));
 }
 
 .stats-grid,

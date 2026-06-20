@@ -54,6 +54,24 @@ type Route =
 
 type Toast = { type: 'success' | 'error'; message: string } | undefined;
 
+type ToolsTab = 'hub' | 'profile' | 'export' | 'importBoxes' | 'backup' | 'movements';
+
+// 返回拦截器栈：浮层/弹窗打开时注册，按返回键先让最上层消费（关闭自己），再轮到路由返回
+const backInterceptors: Array<() => boolean> = [];
+const pushBackInterceptor = (fn: () => boolean) => {
+  backInterceptors.push(fn);
+  return () => {
+    const index = backInterceptors.indexOf(fn);
+    if (index >= 0) backInterceptors.splice(index, 1);
+  };
+};
+const runBackInterceptors = () => {
+  for (let i = backInterceptors.length - 1; i >= 0; i -= 1) {
+    if (backInterceptors[i]!()) return true;
+  }
+  return false;
+};
+
 const parseRoute = (): Route => {
   const hash = window.location.hash.replace(/^#/, '') || '/';
   const parts = hash.split('/').filter(Boolean);
@@ -82,6 +100,9 @@ const navItems: Array<{ route: Route; label: string; icon: typeof Boxes }> = [
   { route: { name: 'tools' }, label: '工具', icon: Settings },
 ];
 
+// 底部标签栏只在一级页面显示；进入箱子详情、二维码等二级页面时隐藏
+const TOP_LEVEL_ROUTES = new Set<Route['name']>(['home', 'scan', 'boxes', 'tools']);
+
 const quantityText = (item: Item) => `${item.quantity}${item.unit ? ` ${item.unit}` : ''}`;
 const itemTitle = (item?: Item) => item?.name ?? '已删除物品';
 const DEFAULT_LOW_STOCK_THRESHOLD = 2;
@@ -92,6 +113,7 @@ const movementTypeText = (type: StockMovement['type']) => (type === 'out' ? '出
 
 export function App() {
   const [route, setRoute] = useState<Route>(parseRoute);
+  const [toolsTab, setToolsTab] = useState<ToolsTab>('hub');
   const [boxes, setBoxes] = useState<Box[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [movements, setMovements] = useState<StockMovement[]>([]);
@@ -185,9 +207,41 @@ export function App() {
   };
 
   const navigate = (next: Route) => {
+    setToolsTab('hub');
     history.pushState({ route: next }, '', routeToHash(next));
     setRoute(next);
   };
+
+  // refs 让原生返回回调始终读到最新值，避免闭包过期
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const toolsTabRef = useRef(toolsTab);
+  toolsTabRef.current = toolsTab;
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+
+  // 计算返回上一级；返回 false 表示已在顶层（首页），调用方应退出 app
+  const goBack = (): boolean => {
+    if (runBackInterceptors()) return true;
+    const r = routeRef.current;
+    if (r.name === 'tools' && toolsTabRef.current !== 'hub') {
+      setToolsTab('hub');
+      return true;
+    }
+    if (r.name === 'box') {
+      navigateRef.current({ name: 'boxes' });
+      return true;
+    }
+    if (r.name === 'qr') {
+      navigateRef.current({ name: 'box', id: r.id });
+      return true;
+    }
+    if (r.name === 'home') return false;
+    navigateRef.current({ name: 'home' });
+    return true;
+  };
+  const goBackRef = useRef(goBack);
+  goBackRef.current = goBack;
 
   useEffect(() => {
     // 记录初始状态，确保 popstate 始终有 state 可恢复
@@ -206,6 +260,20 @@ export function App() {
     window.addEventListener('popstate', handlePopState);
     loadAll().catch((error) => showToast({ type: 'error', message: error.message }));
     return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // 原生安卓返回键 / 全面屏返回手势：返回上一级，仅在首页时退出 app
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let remove: (() => void) | undefined;
+    import('@capacitor/app').then(({ App: CapApp }) => {
+      CapApp.addListener('backButton', () => {
+        if (!goBackRef.current()) CapApp.exitApp();
+      }).then((handle) => {
+        remove = () => handle.remove();
+      });
+    });
+    return () => remove?.();
   }, []);
 
   useEffect(() => onSessionChange(() => {
@@ -264,11 +332,16 @@ export function App() {
     );
   }
 
+  const showBottomNav =
+    Boolean(session) &&
+    TOP_LEVEL_ROUTES.has(route.name) &&
+    !(route.name === 'tools' && toolsTab !== 'hub');
+
   return (
     <div className="app-shell">
       {toast && <div className={`toast ${toast.type}`}>{toast.message}</div>}
       {UpdateDialog}
-      <main className="app-main">
+      <main className={`app-main${showBottomNav ? '' : ' no-bottom-nav'}`}>
         {loading && <div className="state-block">正在读取本地数据...</div>}
         {!loading && route.name === 'home' && (
           <HomePage
@@ -319,10 +392,12 @@ export function App() {
             online={online}
             syncStatus={syncStatus}
             appVersion={appVersion}
+            tab={toolsTab}
+            onTab={setToolsTab}
           />
         )}
       </main>
-      {session && <BottomNav route={route} navigate={navigate} />}
+      {showBottomNav && <BottomNav route={route} navigate={navigate} />}
     </div>
   );
 }
@@ -715,6 +790,12 @@ function HomePage({
   }, [searchQuery, items, boxes]);
 
   const closeSearch = () => { setSearchOpen(false); setSearchQuery(''); };
+
+  // 搜索浮层打开时，按返回键先关闭浮层而不是退出 app
+  useEffect(() => {
+    if (!searchOpen) return;
+    return pushBackInterceptor(() => { closeSearch(); return true; });
+  }, [searchOpen]);
 
   const handleCreate = async (input: { name: string; note?: string; imageDataUrl?: string }) => {
     try {
@@ -1567,6 +1648,8 @@ function ToolsPage({
   online,
   syncStatus,
   appVersion,
+  tab,
+  onTab,
 }: {
   boxes: Box[];
   items: Item[];
@@ -1577,8 +1660,11 @@ function ToolsPage({
   online: boolean;
   syncStatus: { queued: number; conflicts: number };
   appVersion: string;
+  tab: ToolsTab;
+  onTab: (tab: ToolsTab) => void;
 }) {
-  const [mode, setMode] = useState<'hub' | 'profile' | 'export' | 'importBoxes' | 'backup' | 'movements'>('hub');
+  const mode = tab;
+  const setMode = onTab;
   const initialized = useRef(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(boxes.map((box) => box.id)));
   const [fileName, setFileName] = useState(defaultExportFileName());
