@@ -29,7 +29,7 @@ import { fileToImageDataUrl } from './lib/images';
 import { parseBoxesExcel } from './lib/importBoxesExcel';
 import { createQrDataUrl, createQrLabelDataUrl } from './lib/qr';
 import { defaultAuditExportFileName, defaultExportFileName, defaultMovementExportFileName, exportAuditLogsExcel, exportExcel, exportMovementsExcel } from './lib/exportExcel';
-import { AUDIT_ACTION_OPTIONS, auditActionLabel, type AuditLog } from './lib/auditActions';
+import { AUDIT_ACTION_OPTIONS, auditActionLabel, auditActionTone, type AuditLog } from './lib/auditActions';
 import { exportBackup, parseBackupFile, restoreBackup } from './lib/backup';
 import { dataUrlToBase64, isNativeApp, saveDataUrlPhotoToGallery, shareBase64File } from './lib/nativeFiles';
 import { compareBoxCodes, displayBoxCode } from './lib/ids';
@@ -557,8 +557,10 @@ function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (
                   <strong>{u.username}</strong>
                   <small>注册于 {new Date(u.createdAt).toLocaleDateString('zh-CN')}</small>
                 </div>
-                <button className="admin-action" onClick={() => { setResetTarget(u); setNewPwd(''); }}>重置密码</button>
-                <button className="admin-action danger" onClick={() => setDeleteTarget(u)}>删除</button>
+                <div className="admin-row-actions">
+                  <button className="admin-action" onClick={() => { setResetTarget(u); setNewPwd(''); }}>重置密码</button>
+                  <button className="admin-action danger" onClick={() => setDeleteTarget(u)}>删除</button>
+                </div>
               </div>
             ))
           }
@@ -586,43 +588,59 @@ function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (
       )}
 
       {tab === 'audit' && (
-        <>
-          <div className="admin-audit-filters">
-            <select value={auditFilter.userId} onChange={(e) => setAuditFilter((f) => ({ ...f, userId: e.target.value }))}>
-              <option value="">全部用户</option>
-              {userList.map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
-            </select>
-            <select value={auditFilter.action} onChange={(e) => setAuditFilter((f) => ({ ...f, action: e.target.value }))}>
-              <option value="">全部操作</option>
-              {AUDIT_ACTION_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-            <input type="date" value={auditFilter.fromDate} onChange={(e) => setAuditFilter((f) => ({ ...f, fromDate: e.target.value }))} />
-            <input type="date" value={auditFilter.toDate} onChange={(e) => setAuditFilter((f) => ({ ...f, toDate: e.target.value }))} />
+        <div className="audit-pane">
+          <div className="audit-filters">
+            <label className="audit-field">
+              <span>用户</span>
+              <select value={auditFilter.userId} onChange={(e) => setAuditFilter((f) => ({ ...f, userId: e.target.value }))}>
+                <option value="">全部用户</option>
+                {userList.map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
+              </select>
+            </label>
+            <label className="audit-field">
+              <span>操作类型</span>
+              <select value={auditFilter.action} onChange={(e) => setAuditFilter((f) => ({ ...f, action: e.target.value }))}>
+                <option value="">全部操作</option>
+                {AUDIT_ACTION_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </label>
+            <label className="audit-field">
+              <span>开始日期</span>
+              <input type="date" value={auditFilter.fromDate} onChange={(e) => setAuditFilter((f) => ({ ...f, fromDate: e.target.value }))} />
+            </label>
+            <label className="audit-field">
+              <span>结束日期</span>
+              <input type="date" value={auditFilter.toDate} onChange={(e) => setAuditFilter((f) => ({ ...f, toDate: e.target.value }))} />
+            </label>
           </div>
-          <div className="admin-audit-actions">
-            {(auditFilter.userId || auditFilter.action || auditFilter.fromDate || auditFilter.toDate) && (
-              <button className="admin-action" onClick={() => setAuditFilter({ userId: '', action: '', fromDate: '', toDate: '' })}>清除筛选</button>
-            )}
-            <button className="admin-action primary" onClick={handleExportAudit} disabled={auditLogs.length === 0}>导出 Excel</button>
+          <div className="audit-toolbar">
+            <span className="audit-count">{loading ? '加载中…' : `共 ${auditLogs.length} 条`}</span>
+            <div className="audit-toolbar-actions">
+              {(auditFilter.userId || auditFilter.action || auditFilter.fromDate || auditFilter.toDate) && (
+                <button className="ghost small" onClick={() => setAuditFilter({ userId: '', action: '', fromDate: '', toDate: '' })}>清除筛选</button>
+              )}
+              <button className="primary small" onClick={handleExportAudit} disabled={auditLogs.length === 0}>
+                <Download size={15} />导出 Excel
+              </button>
+            </div>
           </div>
           {!loading && (
-            <div className="admin-list">
-              {auditLogs.length === 0
-                ? <div className="admin-empty"><span>暂无操作记录</span></div>
-                : auditLogs.map((log) => (
-                  <div key={log.id} className="admin-row admin-row-clickable" onClick={() => setAuditDetail(log)}>
-                    <span className="admin-avatar">{log.username.slice(0, 1).toUpperCase()}</span>
-                    <div className="admin-row-info">
-                      <strong>{log.username} · {auditActionLabel(log.action)}</strong>
-                      <small>{log.detail ?? ''}</small>
-                      <small>{new Date(log.createdAt).toLocaleString('zh-CN', { hour12: false })} · {log.ip ?? '未知 IP'}</small>
+            auditLogs.length === 0
+              ? <div className="admin-empty"><span>暂无操作记录</span></div>
+              : <div className="audit-list">
+                {auditLogs.map((log) => (
+                  <button key={log.id} className="audit-item" onClick={() => setAuditDetail(log)}>
+                    <div className="audit-item-head">
+                      <span className={`audit-badge tone-${auditActionTone(log.action)}`}>{auditActionLabel(log.action)}</span>
+                      <span className="audit-user">{log.username}</span>
+                      <span className="audit-time">{new Date(log.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}</span>
                     </div>
-                  </div>
-                ))
-              }
-            </div>
+                    {log.detail && <p className="audit-detail">{log.detail}</p>}
+                  </button>
+                ))}
+              </div>
           )}
-        </>
+        </div>
       )}
 
       {resetTarget && (
@@ -2335,66 +2353,66 @@ function MovementHistoryPanel({
         </div>
         <FileDown size={20} />
       </div>
-      <div className="movement-filters">
-        <label>
-          开始
-          <input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} />
-        </label>
-        <label>
-          结束
-          <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} />
-        </label>
-      </div>
-      <div className="filter-group">
-        <div className="filter-group-head">
-          <span>箱子{boxIds.size > 0 ? `（已选 ${boxIds.size}）` : '（不选=全部）'}</span>
-          {boxIds.size > 0 && <button onClick={() => setBoxIds(new Set())}>清空</button>}
-        </div>
-        <div className="filter-chips">
-          {boxes.map((box) => (
-            <button
-              key={box.id}
-              className={`filter-chip${boxIds.has(box.id) ? ' active' : ''}`}
-              onClick={() => toggleInSet(setBoxIds, box.id)}
-            >
-              {box.name}
+      <div className="filter-card">
+        <div className="filter-card-head">
+          <span>筛选</span>
+          {hasFilter && (
+            <button onClick={() => { setFromDate(''); setToDate(''); setBoxIds(new Set()); setTeamNames(new Set()); }}>
+              清除全部
             </button>
-          ))}
+          )}
         </div>
-      </div>
-      {teams.length > 0 && (
+        <div className="filter-dates">
+          <label className="audit-field">
+            <span>开始日期</span>
+            <input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} />
+          </label>
+          <label className="audit-field">
+            <span>结束日期</span>
+            <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} />
+          </label>
+        </div>
         <div className="filter-group">
           <div className="filter-group-head">
-            <span>班组{teamNames.size > 0 ? `（已选 ${teamNames.size}）` : '（不选=全部）'}</span>
-            {teamNames.size > 0 && <button onClick={() => setTeamNames(new Set())}>清空</button>}
+            <span>箱子</span>
+            <small>{boxIds.size > 0 ? `已选 ${boxIds.size}` : '不选＝全部'}</small>
           </div>
           <div className="filter-chips">
-            {teams.map((team) => (
+            {boxes.map((box) => (
               <button
-                key={team}
-                className={`filter-chip${teamNames.has(team) ? ' active' : ''}`}
-                onClick={() => toggleInSet(setTeamNames, team)}
+                key={box.id}
+                className={`filter-chip${boxIds.has(box.id) ? ' active' : ''}`}
+                onClick={() => toggleInSet(setBoxIds, box.id)}
               >
-                {team}
+                {box.name}
               </button>
             ))}
           </div>
         </div>
-      )}
-      {hasFilter && (
-        <button className="ghost full" onClick={() => {
-          setFromDate('');
-          setToDate('');
-          setBoxIds(new Set());
-          setTeamNames(new Set());
-        }}>
-          清除筛选
-        </button>
-      )}
+        {teams.length > 0 && (
+          <div className="filter-group">
+            <div className="filter-group-head">
+              <span>班组</span>
+              <small>{teamNames.size > 0 ? `已选 ${teamNames.size}` : '不选＝全部'}</small>
+            </div>
+            <div className="filter-chips">
+              {teams.map((team) => (
+                <button
+                  key={team}
+                  className={`filter-chip${teamNames.has(team) ? ' active' : ''}`}
+                  onClick={() => toggleInSet(setTeamNames, team)}
+                >
+                  {team}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
       <div className="movement-export-actions">
         <button className="primary full" onClick={() => handleExportMovements('filtered')} disabled={filteredMovements.length === 0}>
           <Download size={18} />
-          导出筛选
+          导出筛选 ({filteredMovements.length})
         </button>
         <button className="ghost full" onClick={() => handleExportMovements('all')} disabled={movements.length === 0}>
           <FileDown size={18} />
@@ -2888,9 +2906,18 @@ function StockDialog({
           <input type="datetime-local" value={createdAt} onChange={(event) => setCreatedAt(event.target.value)} />
         </label>
         <div className="stock-preview">
-          <span>当前库存：{quantityText(item)}</span>
-          <span>累计入库：{totalInbound + (type === 'in' && Number.isFinite(value) && value > 0 ? value : 0)}</span>
-          <strong className={after < 0 ? 'danger-text' : ''}>操作后：{Number.isFinite(after) ? after : item.quantity}</strong>
+          <div className="stock-preview-row">
+            <span>当前库存</span>
+            <b>{quantityText(item)}</b>
+          </div>
+          <div className="stock-preview-row">
+            <span>累计入库</span>
+            <b>{totalInbound + (type === 'in' && Number.isFinite(value) && value > 0 ? value : 0)}</b>
+          </div>
+          <div className="stock-preview-row total">
+            <span>操作后</span>
+            <b className={after < 0 ? 'danger-text' : ''}>{Number.isFinite(after) ? after : item.quantity}</b>
+          </div>
         </div>
         {after < 0 && <p className="danger-text">出库数量不能超过当前库存。</p>}
         <ImagePicker

@@ -22,6 +22,18 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
 
 export const auditActionLabel = (action: string) => AUDIT_ACTION_LABELS[action] ?? action;
 
+// 动作分类，用于徽标配色，使日志一眼可辨
+export type AuditTone = 'in' | 'out' | 'create' | 'delete' | 'edit' | 'admin' | 'neutral';
+export const auditActionTone = (action: string): AuditTone => {
+  if (action === 'stock.in') return 'in';
+  if (action === 'stock.out') return 'out';
+  if (action.endsWith('.delete')) return 'delete';
+  if (action.endsWith('.create') || action === 'import' || action === 'restore') return 'create';
+  if (action.startsWith('admin.')) return 'admin';
+  if (action.startsWith('export')) return 'neutral';
+  return 'edit';
+};
+
 // 供筛选下拉使用的动作列表
 export const AUDIT_ACTION_OPTIONS = Object.entries(AUDIT_ACTION_LABELS).map(([value, label]) => ({ value, label }));
 

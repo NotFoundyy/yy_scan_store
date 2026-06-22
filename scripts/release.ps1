@@ -4,7 +4,7 @@ param(
 
     [string]$Changelog = "",
 
-    # 部署目标，可用环境变量 RELEASE_* 覆盖，便于换服务器/域名而不改脚本
+    # Deploy target; override via RELEASE_* env vars to switch server/domain without editing the script.
     [string]$ServerHost = $(if ($env:RELEASE_HOST) { $env:RELEASE_HOST } else { "101.132.61.21" }),
     [string]$ServerUser = $(if ($env:RELEASE_USER) { $env:RELEASE_USER } else { "root" }),
     [string]$RemoteDir  = $(if ($env:RELEASE_REMOTE_DIR) { $env:RELEASE_REMOTE_DIR } else { "~/yy_scan_store/bundles" }),
@@ -36,8 +36,15 @@ try {
     $zip.Dispose()
 }
 
-Write-Host "==> Uploading to server ..."
-scp $ZipPath "${Server}:${RemoteDir}/latest.zip"
+# Upload via "ssh + cat" to avoid scp SFTP/legacy protocol incompatibilities across OpenSSH versions.
+# Start-Process -RedirectStandardInput gives binary-safe stdin redirection.
+function Send-FileOverSsh($localPath, $remotePath) {
+    $p = Start-Process ssh -ArgumentList @($Server, "cat > $remotePath") -RedirectStandardInput $localPath -NoNewWindow -Wait -PassThru
+    if ($p.ExitCode -ne 0) { throw "upload failed: $remotePath (exit $($p.ExitCode))" }
+}
+
+Write-Host "==> Uploading bundle to server ..."
+Send-FileOverSsh $absZip "$RemoteDir/latest.zip"
 
 Write-Host "==> Updating version.json ..."
 $obj = if ($Changelog) {
@@ -48,8 +55,11 @@ $obj = if ($Changelog) {
 $jsonStr = $obj | ConvertTo-Json -Compress
 $tmpJson = Join-Path $PSScriptRoot "bundle-version.json"
 [System.IO.File]::WriteAllText($tmpJson, $jsonStr, (New-Object System.Text.UTF8Encoding $false))
-scp $tmpJson "${Server}:${RemoteDir}/version.json"
-Remove-Item $tmpJson
+try {
+    Send-FileOverSsh $tmpJson "$RemoteDir/version.json"
+} finally {
+    Remove-Item $tmpJson
+}
 
 Remove-Item $ZipPath
 Write-Host "==> Done! v$Version deployed."
