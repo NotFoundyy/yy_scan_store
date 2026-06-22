@@ -19,15 +19,18 @@ const argon2Params = { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, pa
 export const hashPassword = (password: string) => argon2.hash(password, argon2Params);
 export const verifyPassword = (hash: string, password: string) => argon2.verify(hash, password);
 
+const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 刷新令牌有效期：30 天
+const ACCESS_TOKEN_TTL = '15m'; // 访问令牌有效期
+
 export const createSession = async (app: FastifyInstance, user: AuthUser) => {
   const refreshToken = crypto.randomBytes(48).toString('base64url');
   await db.insert(sessions).values({
     userId: user.id,
     refreshTokenHash: sha256(refreshToken),
-    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
   });
   return {
-    accessToken: app.jwt.sign(user, { expiresIn: '15m' }),
+    accessToken: app.jwt.sign(user, { expiresIn: ACCESS_TOKEN_TTL }),
     refreshToken,
     user,
   };

@@ -25,7 +25,6 @@ export type Item = {
   specModel?: string;
   quantity: number;
   unit?: string;
-  lowStockThreshold?: number;
   imageDataUrl?: string;
   note?: string;
   createdAt: string;

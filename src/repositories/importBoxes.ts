@@ -47,7 +47,6 @@ export const importBoxesWithItems = async (rows: ImportBoxRow[]) => {
         specModel: entry.specModel?.trim(),
         quantity: entry.quantity,
         unit: entry.unit?.trim(),
-        lowStockThreshold: 2,
         note: entry.note?.trim(),
         createdAt,
         updatedAt: createdAt,

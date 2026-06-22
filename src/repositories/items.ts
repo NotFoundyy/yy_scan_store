@@ -37,7 +37,6 @@ export const createItem = async (input: {
   specModel?: string;
   quantity: number;
   unit?: string;
-  lowStockThreshold?: number;
   imageDataUrl?: string;
   note?: string;
   createdAt?: string;
@@ -51,7 +50,6 @@ export const createItem = async (input: {
     specModel: input.specModel?.trim(),
     quantity: input.quantity,
     unit: input.unit?.trim(),
-    lowStockThreshold: input.lowStockThreshold,
     imageDataUrl: input.imageDataUrl,
     note: input.note?.trim(),
     createdAt: now,
@@ -83,7 +81,7 @@ export const createItem = async (input: {
 
 export const updateItem = async (
   item: Item,
-  input: { name: string; specModel?: string; quantity: number; unit?: string; lowStockThreshold?: number; imageDataUrl?: string; note?: string },
+  input: { name: string; specModel?: string; quantity: number; unit?: string; imageDataUrl?: string; note?: string },
 ) => {
   const db = await getDb();
   const now = nowIso();
@@ -93,7 +91,6 @@ export const updateItem = async (
     specModel: input.specModel?.trim(),
     quantity: input.quantity,
     unit: input.unit?.trim(),
-    lowStockThreshold: input.lowStockThreshold,
     imageDataUrl: input.imageDataUrl ?? item.imageDataUrl,
     note: input.note?.trim(),
     updatedAt: now,

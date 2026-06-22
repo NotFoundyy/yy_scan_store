@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx-js-style';
 import type { Box, Item, StockMovement } from '../types/domain';
 import { compactDateTime, formatDateOnly } from './dates';
 import { compareBoxCodes } from './ids';
+import { auditActionLabel, type AuditLog } from './auditActions';
 import { isNativeApp, shareBase64File } from './nativeFiles';
 
 const invalidFileChars = /[<>:"/\\|?*\u0000-\u001f]/g;
@@ -303,17 +304,25 @@ const buildSummarySheet = (boxes: Box[], items: Item[], movements: StockMovement
     { wch: 7 },
     { wch: 18 },
     { wch: 9 },
+    { wch: estimateColumnWidth(rows.map((row) => row[3]), 14, 24) },
     { wch: 18 },
-    { wch: 18 },
-    { wch: 18 },
-    { wch: 18 },
+    { wch: estimateColumnWidth(rows.map((row) => row[5]), 14, 24) },
+    { wch: estimateColumnWidth(rows.map((row) => row[6]), 14, 26) },
     { wch: 10 },
     { wch: 8 },
+    { wch: estimateColumnWidth(rows.map((row) => row[9]), 10, 18) },
     { wch: 12 },
-    { wch: 12 },
-    { wch: 24 },
+    { wch: estimateColumnWidth(rows.map((row) => row[11]), 14, 40) },
   ];
-  worksheet['!rows'] = [{ hpt: 30 }, { hpt: 24 }, { hpt: 26 }, ...Array.from({ length: rows.length }, () => ({ hpt: 22 }))];
+  worksheet['!rows'] = [
+    { hpt: 30 },
+    { hpt: 24 },
+    { hpt: 26 },
+    ...rows.map((row) => {
+      const maxLines = row.reduce<number>((count, value) => Math.max(count, String(value ?? '').split('\n').length), 1);
+      return { hpt: Math.max(22, maxLines * 18) };
+    }),
+  ];
 
   const range = XLSX.utils.decode_range(worksheet['!ref'] ?? 'A1:A1');
   for (let row = range.s.r; row <= range.e.r; row += 1) {
@@ -386,17 +395,25 @@ const buildMovementSheet = (
     { wch: 7 },
     { wch: 18 },
     { wch: 9 },
+    { wch: estimateColumnWidth(rows.map((row) => row[3]), 14, 24) },
     { wch: 18 },
-    { wch: 18 },
-    { wch: 18 },
-    { wch: 18 },
+    { wch: estimateColumnWidth(rows.map((row) => row[5]), 14, 24) },
+    { wch: estimateColumnWidth(rows.map((row) => row[6]), 14, 26) },
     { wch: 10 },
     { wch: 8 },
+    { wch: estimateColumnWidth(rows.map((row) => row[9]), 10, 18) },
     { wch: 12 },
-    { wch: 12 },
-    { wch: 24 },
+    { wch: estimateColumnWidth(rows.map((row) => row[11]), 14, 40) },
   ];
-  worksheet['!rows'] = [{ hpt: 30 }, { hpt: 24 }, { hpt: 26 }, ...Array.from({ length: rows.length }, () => ({ hpt: 22 }))];
+  worksheet['!rows'] = [
+    { hpt: 30 },
+    { hpt: 24 },
+    { hpt: 26 },
+    ...rows.map((row) => {
+      const maxLines = row.reduce<number>((count, value) => Math.max(count, String(value ?? '').split('\n').length), 1);
+      return { hpt: Math.max(22, maxLines * 18) };
+    }),
+  ];
 
   const range = XLSX.utils.decode_range(worksheet['!ref'] ?? 'A1:A1');
   for (let row = range.s.r; row <= range.e.r; row += 1) {
@@ -534,5 +551,81 @@ export const exportMovementsExcel = async (input: {
     buildMovementSheet(input.boxes, input.items, input.movements, input.filterSummary),
     '流水记录',
   );
+  return saveWorkbook(workbook, input.fileName);
+};
+
+export const defaultAuditExportFileName = () => `操作日志-${compactDateTime()}.xlsx`;
+
+const formatFullDateTime = (iso: string) => {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+};
+
+export const exportAuditLogsExcel = async (input: {
+  logs: AuditLog[];
+  fileName: string;
+  filterSummary?: string;
+}): Promise<ExportResult> => {
+  const headers = ['序号', '时间', '操作人', '操作类型', '详情', 'IP 地址'];
+  const rows = input.logs.map((log, index) => [
+    index + 1,
+    formatFullDateTime(log.createdAt),
+    log.username,
+    auditActionLabel(log.action),
+    log.detail ?? '',
+    log.ip ?? '',
+  ]);
+  const data = [
+    ['操作日志导出', ...Array.from({ length: headers.length - 1 }, () => '')],
+    [input.filterSummary || `共 ${input.logs.length} 条记录`, ...Array.from({ length: headers.length - 1 }, () => '')],
+    headers,
+    ...rows,
+  ];
+  const worksheet = XLSX.utils.aoa_to_sheet(data);
+  worksheet['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: headers.length - 1 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: headers.length - 1 } },
+  ];
+  worksheet['!freeze'] = { xSplit: 0, ySplit: 3 };
+  worksheet['!cols'] = [
+    { wch: 7 },
+    { wch: 20 },
+    { wch: estimateColumnWidth(rows.map((row) => row[2]), 12, 20) },
+    { wch: 16 },
+    { wch: estimateColumnWidth(rows.map((row) => row[4]), 20, 60) },
+    { wch: 16 },
+  ];
+  worksheet['!rows'] = [
+    { hpt: 30 },
+    { hpt: 24 },
+    { hpt: 26 },
+    ...rows.map((row) => {
+      const maxLines = row.reduce<number>((count, value) => Math.max(count, String(value ?? '').split('\n').length), 1);
+      return { hpt: Math.max(22, maxLines * 18) };
+    }),
+  ];
+  const range = XLSX.utils.decode_range(worksheet['!ref'] ?? 'A1:A1');
+  for (let row = range.s.r; row <= range.e.r; row += 1) {
+    for (let col = range.s.c; col <= range.e.c; col += 1) {
+      const cell = ensureCell(worksheet, row, col);
+      const isTitle = row === 0;
+      const isSubtitle = row === 1;
+      const isHeader = row === 2;
+      cell.s = {
+        alignment: { horizontal: isSubtitle || col === 4 ? 'left' : 'center', vertical: 'center', wrapText: true },
+        font: {
+          name: 'Microsoft YaHei',
+          sz: isTitle ? 16 : 11,
+          bold: isTitle || isHeader,
+          color: { rgb: isSubtitle ? '667085' : '1D1D1F' },
+        },
+        fill: isHeader ? { fgColor: { rgb: 'E6F4FF' } } : undefined,
+        border: isTitle || isSubtitle ? undefined : baseBorder,
+      };
+    }
+  }
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, '操作日志');
   return saveWorkbook(workbook, input.fileName);
 };

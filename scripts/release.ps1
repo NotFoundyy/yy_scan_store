@@ -2,14 +2,19 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
 
-    [string]$Changelog = ""
+    [string]$Changelog = "",
+
+    # 部署目标，可用环境变量 RELEASE_* 覆盖，便于换服务器/域名而不改脚本
+    [string]$ServerHost = $(if ($env:RELEASE_HOST) { $env:RELEASE_HOST } else { "101.132.61.21" }),
+    [string]$ServerUser = $(if ($env:RELEASE_USER) { $env:RELEASE_USER } else { "root" }),
+    [string]$RemoteDir  = $(if ($env:RELEASE_REMOTE_DIR) { $env:RELEASE_REMOTE_DIR } else { "~/yy_scan_store/bundles" }),
+    [string]$BaseUrl    = $(if ($env:RELEASE_BASE_URL) { $env:RELEASE_BASE_URL } else { "http://101.132.61.21" })
 )
 
 $ErrorActionPreference = 'Stop'
 
-$Server    = "root@101.132.61.21"
-$RemoteDir = "~/yy_scan_store/bundles"
-$BundleUrl = "http://101.132.61.21/bundles/latest.zip"
+$Server    = "${ServerUser}@${ServerHost}"
+$BundleUrl = "$($BaseUrl.TrimEnd('/'))/bundles/latest.zip"
 $ZipPath   = "bundle-$Version.zip"
 
 Write-Host "==> Building v$Version ..."

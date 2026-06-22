@@ -28,7 +28,8 @@ import { formatDate, formatDateOnly, fromDatetimeLocal, toDatetimeLocal } from '
 import { fileToImageDataUrl } from './lib/images';
 import { parseBoxesExcel } from './lib/importBoxesExcel';
 import { createQrDataUrl, createQrLabelDataUrl } from './lib/qr';
-import { defaultExportFileName, defaultMovementExportFileName, exportExcel, exportMovementsExcel } from './lib/exportExcel';
+import { defaultAuditExportFileName, defaultExportFileName, defaultMovementExportFileName, exportAuditLogsExcel, exportExcel, exportMovementsExcel } from './lib/exportExcel';
+import { AUDIT_ACTION_OPTIONS, auditActionLabel, type AuditLog } from './lib/auditActions';
 import { exportBackup, parseBackupFile, restoreBackup } from './lib/backup';
 import { dataUrlToBase64, isNativeApp, saveDataUrlPhotoToGallery, shareBase64File } from './lib/nativeFiles';
 import { compareBoxCodes, displayBoxCode } from './lib/ids';
@@ -103,11 +104,18 @@ const navItems: Array<{ route: Route; label: string; icon: typeof Boxes }> = [
 // 底部标签栏只在一级页面显示；进入箱子详情、二维码等二级页面时隐藏
 const TOP_LEVEL_ROUTES = new Set<Route['name']>(['home', 'scan', 'boxes', 'tools']);
 
+const TOAST_DURATION_MS = 1800;
+const CLOUD_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 const quantityText = (item: Item) => `${item.quantity}${item.unit ? ` ${item.unit}` : ''}`;
 const itemTitle = (item?: Item) => item?.name ?? '已删除物品';
-const DEFAULT_LOW_STOCK_THRESHOLD = 2;
 const COMMON_UNITS = ['个', '套', '米', '箱', '瓶', '件', '片', '根', '把', '只', '盒', '付', '台', '双', '包'];
-const isLowStock = (item: Item, fallbackThreshold: number) => item.quantity <= (item.lowStockThreshold ?? fallbackThreshold);
+// 累计入库数量：该物品历史上每一次库存增加之和（入库 + 向上调整，含初始库存）。
+// 用 max(0, 后-前) 统计正向增量，出库/向下调整不计入。
+const cumulativeInbound = (itemId: string, movements: StockMovement[]) =>
+  movements.reduce(
+    (sum, m) => (m.itemId === itemId ? sum + Math.max(0, m.afterQuantity - m.beforeQuantity) : sum),
+    0,
+  );
 const todayKey = () => new Date().toLocaleDateString('sv-SE');
 const movementTypeText = (type: StockMovement['type']) => (type === 'out' ? '出库' : type === 'in' ? '入库' : '调整');
 
@@ -131,12 +139,11 @@ export function App() {
     const s = localStorage.getItem('last-sync-time');
     return s ? new Date(s) : undefined;
   });
-  const lowStockThreshold = DEFAULT_LOW_STOCK_THRESHOLD;
 
   const showToast = (next: Toast) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast(next);
-    toastTimerRef.current = window.setTimeout(() => setToast(undefined), 1800);
+    toastTimerRef.current = window.setTimeout(() => setToast(undefined), TOAST_DURATION_MS);
   };
 
   useEffect(() => {
@@ -298,7 +305,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const timer = setInterval(() => syncData().catch(() => undefined), 5 * 60 * 1000);
+    const timer = setInterval(() => syncData().catch(() => undefined), CLOUD_SYNC_INTERVAL_MS);
     return () => clearInterval(timer);
   }, []);
 
@@ -351,7 +358,6 @@ export function App() {
             navigate={navigate}
             refresh={syncData}
             showToast={showToast}
-            lowStockThreshold={lowStockThreshold}
             online={online}
             lastSyncTime={lastSyncTime}
           />
@@ -363,7 +369,6 @@ export function App() {
             navigate={navigate}
             refresh={syncData}
             showToast={showToast}
-            lowStockThreshold={lowStockThreshold}
           />
         )}
         {!loading && route.name === 'box' && (
@@ -373,7 +378,6 @@ export function App() {
             navigate={navigate}
             refresh={syncData}
             showToast={showToast}
-            lowStockThreshold={lowStockThreshold}
           />
         )}
         {!loading && route.name === 'qr' && (
@@ -406,23 +410,56 @@ type AdminUser = { id: string; username: string; createdAt: string };
 type LoginLog = { id: string; username: string; ip: string | null; success: boolean; createdAt: string };
 
 function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (t: Toast) => void }) {
-  const [tab, setTab] = useState<'users' | 'logs'>('users');
+  const [tab, setTab] = useState<'users' | 'logs' | 'audit'>('users');
   const [userList, setUserList] = useState<AdminUser[]>([]);
   const [logs, setLogs] = useState<LoginLog[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [resetTarget, setResetTarget] = useState<AdminUser | undefined>();
+  const [deleteTarget, setDeleteTarget] = useState<AdminUser | undefined>();
+  const [deleting, setDeleting] = useState(false);
   const [newPwd, setNewPwd] = useState('');
   const [resetting, setResetting] = useState(false);
   const [logDetail, setLogDetail] = useState<LoginLog | undefined>();
+  const [auditDetail, setAuditDetail] = useState<AuditLog | undefined>();
+  const [auditFilter, setAuditFilter] = useState<{ userId: string; action: string; fromDate: string; toDate: string }>({
+    userId: '', action: '', fromDate: '', toDate: '',
+  });
+
+  // 用户列表始终加载：用户管理页和操作日志的「按用户筛选」都要用
+  useEffect(() => {
+    api.get<AdminUser[]>('/admin/users').then(setUserList).catch(() => undefined);
+  }, []);
+
+  const loadAudit = () => {
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (auditFilter.userId) params.set('userId', auditFilter.userId);
+    if (auditFilter.action) params.set('action', auditFilter.action);
+    if (auditFilter.fromDate) params.set('fromDate', auditFilter.fromDate);
+    if (auditFilter.toDate) params.set('toDate', auditFilter.toDate);
+    api.get<AuditLog[]>(`/admin/audit-logs?${params.toString()}`)
+      .then(setAuditLogs)
+      .catch((e) => showToast({ type: 'error', message: e instanceof Error ? e.message : '加载失败' }))
+      .finally(() => setLoading(false));
+  };
 
   useEffect(() => {
-    setLoading(true);
-    const p = tab === 'users'
-      ? api.get<AdminUser[]>('/admin/users').then(setUserList)
-      : api.get<LoginLog[]>('/admin/login-logs').then(setLogs);
-    p.catch((e) => showToast({ type: 'error', message: e instanceof Error ? e.message : '加载失败' }))
-      .finally(() => setLoading(false));
-  }, [tab]);
+    if (tab === 'users') {
+      setLoading(true);
+      api.get<AdminUser[]>('/admin/users').then(setUserList)
+        .catch((e) => showToast({ type: 'error', message: e instanceof Error ? e.message : '加载失败' }))
+        .finally(() => setLoading(false));
+    } else if (tab === 'logs') {
+      setLoading(true);
+      api.get<LoginLog[]>('/admin/login-logs').then(setLogs)
+        .catch((e) => showToast({ type: 'error', message: e instanceof Error ? e.message : '加载失败' }))
+        .finally(() => setLoading(false));
+    } else {
+      loadAudit();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, auditFilter]);
 
   const handleReset = async () => {
     if (!resetTarget || !newPwd || newPwd.length < 6) return;
@@ -436,6 +473,44 @@ function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (
       showToast({ type: 'error', message: e instanceof Error ? e.message : '重置失败' });
     } finally {
       setResetting(false);
+    }
+  };
+
+  const handleDeleteUser = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api.post(`/admin/users/${deleteTarget.id}/delete`, {});
+      showToast({ type: 'success', message: `已删除用户 ${deleteTarget.username}` });
+      setUserList((list) => list.filter((u) => u.id !== deleteTarget.id));
+      setDeleteTarget(undefined);
+    } catch (e) {
+      showToast({ type: 'error', message: e instanceof Error ? e.message : '删除失败' });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleExportAudit = async () => {
+    if (auditLogs.length === 0) return;
+    try {
+      const parts = [
+        auditFilter.userId ? `用户：${userList.find((u) => u.id === auditFilter.userId)?.username ?? ''}` : '',
+        auditFilter.action ? `类型：${auditActionLabel(auditFilter.action)}` : '',
+        auditFilter.fromDate ? `自 ${auditFilter.fromDate}` : '',
+        auditFilter.toDate ? `至 ${auditFilter.toDate}` : '',
+      ].filter(Boolean);
+      const result = await exportAuditLogsExcel({
+        logs: auditLogs,
+        fileName: defaultAuditExportFileName(),
+        filterSummary: parts.length ? parts.join('  ') : `共 ${auditLogs.length} 条记录`,
+      });
+      if (result.method !== 'cancelled') {
+        await api.post('/audit', { action: 'export.audit', detail: `导出操作日志 ${auditLogs.length} 条` }).catch(() => undefined);
+        showToast({ type: 'success', message: '操作日志已导出' });
+      }
+    } catch (e) {
+      showToast({ type: 'error', message: e instanceof Error ? e.message : '导出失败' });
     }
   };
 
@@ -460,6 +535,7 @@ function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (
         <div className="admin-tab-control">
           <button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')}>用户管理</button>
           <button className={tab === 'logs' ? 'active' : ''} onClick={() => setTab('logs')}>登录日志</button>
+          <button className={tab === 'audit' ? 'active' : ''} onClick={() => setTab('audit')}>操作日志</button>
         </div>
       </div>
 
@@ -482,6 +558,7 @@ function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (
                   <small>注册于 {new Date(u.createdAt).toLocaleDateString('zh-CN')}</small>
                 </div>
                 <button className="admin-action" onClick={() => { setResetTarget(u); setNewPwd(''); }}>重置密码</button>
+                <button className="admin-action danger" onClick={() => setDeleteTarget(u)}>删除</button>
               </div>
             ))
           }
@@ -506,6 +583,46 @@ function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (
             ))
           }
         </div>
+      )}
+
+      {tab === 'audit' && (
+        <>
+          <div className="admin-audit-filters">
+            <select value={auditFilter.userId} onChange={(e) => setAuditFilter((f) => ({ ...f, userId: e.target.value }))}>
+              <option value="">全部用户</option>
+              {userList.map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
+            </select>
+            <select value={auditFilter.action} onChange={(e) => setAuditFilter((f) => ({ ...f, action: e.target.value }))}>
+              <option value="">全部操作</option>
+              {AUDIT_ACTION_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            <input type="date" value={auditFilter.fromDate} onChange={(e) => setAuditFilter((f) => ({ ...f, fromDate: e.target.value }))} />
+            <input type="date" value={auditFilter.toDate} onChange={(e) => setAuditFilter((f) => ({ ...f, toDate: e.target.value }))} />
+          </div>
+          <div className="admin-audit-actions">
+            {(auditFilter.userId || auditFilter.action || auditFilter.fromDate || auditFilter.toDate) && (
+              <button className="admin-action" onClick={() => setAuditFilter({ userId: '', action: '', fromDate: '', toDate: '' })}>清除筛选</button>
+            )}
+            <button className="admin-action primary" onClick={handleExportAudit} disabled={auditLogs.length === 0}>导出 Excel</button>
+          </div>
+          {!loading && (
+            <div className="admin-list">
+              {auditLogs.length === 0
+                ? <div className="admin-empty"><span>暂无操作记录</span></div>
+                : auditLogs.map((log) => (
+                  <div key={log.id} className="admin-row admin-row-clickable" onClick={() => setAuditDetail(log)}>
+                    <span className="admin-avatar">{log.username.slice(0, 1).toUpperCase()}</span>
+                    <div className="admin-row-info">
+                      <strong>{log.username} · {auditActionLabel(log.action)}</strong>
+                      <small>{log.detail ?? ''}</small>
+                      <small>{new Date(log.createdAt).toLocaleString('zh-CN', { hour12: false })} · {log.ip ?? '未知 IP'}</small>
+                    </div>
+                  </div>
+                ))
+              }
+            </div>
+          )}
+        </>
       )}
 
       {resetTarget && (
@@ -564,6 +681,38 @@ function AdminPanel({ session, showToast }: { session: AuthSession; showToast: (
             <button className="admin-confirm admin-confirm-full" onClick={() => setLogDetail(undefined)}>
               关闭
             </button>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="admin-modal-backdrop" onClick={() => setDeleteTarget(undefined)}>
+          <div className="admin-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="admin-modal-icon fail">{deleteTarget.username.slice(0, 1).toUpperCase()}</div>
+            <h2>删除用户</h2>
+            <p>确认删除账号 <strong>{deleteTarget.username}</strong>？该用户的<strong>全部箱子、物品和流水都会一并永久删除</strong>，不可恢复。</p>
+            <div className="admin-modal-actions">
+              <button className="admin-cancel" onClick={() => setDeleteTarget(undefined)}>取消</button>
+              <button className="admin-confirm danger" disabled={deleting} onClick={handleDeleteUser}>
+                {deleting ? '删除中...' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {auditDetail && (
+        <div className="admin-modal-backdrop" onClick={() => setAuditDetail(undefined)}>
+          <div className="admin-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="admin-modal-icon"><span>{auditDetail.username.slice(0, 1).toUpperCase()}</span></div>
+            <h2>{auditActionLabel(auditDetail.action)}</h2>
+            <div className="admin-log-detail">
+              <div className="admin-log-detail-row"><span>操作人</span><strong>{auditDetail.username}</strong></div>
+              <div className="admin-log-detail-row"><span>时间</span><strong>{new Date(auditDetail.createdAt).toLocaleString('zh-CN', { hour12: false })}</strong></div>
+              <div className="admin-log-detail-row"><span>详情</span><strong>{auditDetail.detail ?? '—'}</strong></div>
+              <div className="admin-log-detail-row"><span>IP 地址</span><strong>{auditDetail.ip ?? '未记录'}</strong></div>
+            </div>
+            <button className="admin-confirm admin-confirm-full" onClick={() => setAuditDetail(undefined)}>关闭</button>
           </div>
         </div>
       )}
@@ -753,7 +902,6 @@ function HomePage({
   navigate,
   refresh,
   showToast,
-  lowStockThreshold,
   online,
   lastSyncTime,
 }: {
@@ -763,14 +911,13 @@ function HomePage({
   navigate: (route: Route) => void;
   refresh: () => Promise<void>;
   showToast: (toast: Toast) => void;
-  lowStockThreshold: number;
   online: boolean;
   lastSyncTime?: Date;
 }) {
   const [creating, setCreating] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const lowStockCount = items.filter((item) => isLowStock(item, lowStockThreshold)).length;
+  const totalStock = items.reduce((sum, item) => sum + item.quantity, 0);
   const todayMovements = movements.filter((movement) => movement.createdAt.slice(0, 10) === todayKey()).length;
   const todayIn = movements.filter((movement) => movement.createdAt.slice(0, 10) === todayKey() && movement.type === 'in').length;
   const todayOut = movements.filter((movement) => movement.createdAt.slice(0, 10) === todayKey() && movement.type === 'out').length;
@@ -863,7 +1010,7 @@ function HomePage({
                     </div>
                     <div className="search-result-meta">
                       <span className="search-box-tag">{box?.name ?? '未知箱子'}</span>
-                      <span className={`search-qty${isLowStock(item, lowStockThreshold) ? ' low' : ''}`}>{quantityText(item)}</span>
+                      <span className="search-qty">{quantityText(item)}</span>
                     </div>
                   </div>
                 ))}
@@ -876,7 +1023,7 @@ function HomePage({
       <div className="overview-strip">
         <StatPill icon={<Boxes size={28} />} label="箱子" value={boxes.length} />
         <StatPill icon={<PackagePlus size={27} />} label="物品" value={items.length} />
-        <StatPill icon={<Archive size={27} />} label="低库存" value={lowStockCount} tone={lowStockCount ? 'warning' : undefined} />
+        <StatPill icon={<Archive size={27} />} label="总库存" value={totalStock} />
         <StatPill icon={<FileDown size={27} />} label={`今日 +${todayIn}/-${todayOut}`} value={todayMovements} />
       </div>
 
@@ -915,7 +1062,6 @@ function HomePage({
           <div className="home-box-list">
             {visibleBoxes.map((box) => {
               const boxItems = items.filter((item) => item.boxId === box.id);
-              const hasLowStock = boxItems.some((item) => isLowStock(item, lowStockThreshold));
               return (
                 <div
                   className="home-box-row"
@@ -936,7 +1082,6 @@ function HomePage({
                     <span>物品 {boxItems.length}</span>
                     <small>{formatDate(box.updatedAt)}</small>
                   </div>
-                  <span className={`status-chip ${hasLowStock ? 'warning' : ''}`}>{hasLowStock ? '低库存' : '正常'}</span>
                   <ChevronRight size={22} />
                 </div>
               );
@@ -1013,18 +1158,15 @@ function BoxListPage({
   navigate,
   refresh,
   showToast,
-  lowStockThreshold,
 }: {
   boxes: Box[];
   items: Item[];
   navigate: (route: Route) => void;
   refresh: () => Promise<void>;
   showToast: (toast: Toast) => void;
-  lowStockThreshold: number;
 }) {
   const [query, setQuery] = useState('');
   const [creating, setCreating] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<'all' | 'low' | 'normal'>('all');
   const itemsByBox = useMemo(() => {
     const map = new Map<string, Item[]>();
     for (const item of items) {
@@ -1037,15 +1179,11 @@ function BoxListPage({
 
   const filtered = useMemo(() => {
     const text = query.trim().toLowerCase();
-    const rows = boxes.filter((box) => {
-      const boxItems = itemsByBox.get(box.id) ?? [];
-      const low = boxItems.some((item) => isLowStock(item, lowStockThreshold));
-      const textMatched = !text || `${box.name} ${box.code} ${box.note ?? ''}`.toLowerCase().includes(text);
-      const statusMatched = statusFilter === 'all' || (statusFilter === 'low' ? low : !low);
-      return textMatched && statusMatched;
-    });
+    const rows = boxes.filter(
+      (box) => !text || `${box.name} ${box.code} ${box.note ?? ''}`.toLowerCase().includes(text),
+    );
     return rows.sort((a, b) => compareBoxCodes(a.code, b.code));
-  }, [boxes, itemsByBox, lowStockThreshold, query, statusFilter]);
+  }, [boxes, query]);
 
   const handleCreate = async (input: { name: string; note?: string; imageDataUrl?: string }) => {
     try {
@@ -1082,20 +1220,12 @@ function BoxListPage({
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索箱子" />
         </label>
       </div>
-      <div className="list-controls">
-        <div className="filter-tabs">
-          <button className={statusFilter === 'all' ? 'active' : ''} onClick={() => setStatusFilter('all')}>全部</button>
-          <button className={statusFilter === 'low' ? 'active' : ''} onClick={() => setStatusFilter('low')}>低库存</button>
-          <button className={statusFilter === 'normal' ? 'active' : ''} onClick={() => setStatusFilter('normal')}>正常</button>
-        </div>
-      </div>
       {filtered.length === 0 ? (
         <EmptyState title="还没有箱子" text="先创建一个箱子，再添加物品和生成二维码。" />
       ) : (
         <div className="card-list">
           {filtered.map((box) => {
             const boxItems = itemsByBox.get(box.id) ?? [];
-            const hasLowStock = boxItems.some((item) => isLowStock(item, lowStockThreshold));
             return (
               <div
                 key={box.id}
@@ -1114,7 +1244,6 @@ function BoxListPage({
                 </div>
                 <div className="card-meta">
                   <span>{boxItems.length} 种物品</span>
-                  <span className={`status-chip mini ${hasLowStock ? 'warning' : ''}`}>{hasLowStock ? '低库存' : '正常'}</span>
                 </div>
               </div>
             );
@@ -1135,14 +1264,12 @@ function BoxDetailPage({
   navigate,
   refresh,
   showToast,
-  lowStockThreshold,
 }: {
   box?: Box;
   movements: StockMovement[];
   navigate: (route: Route) => void;
   refresh: () => Promise<void>;
   showToast: (toast: Toast) => void;
-  lowStockThreshold: number;
 }) {
   const [boxItems, setBoxItems] = useState<Item[]>([]);
   const [editingBox, setEditingBox] = useState(false);
@@ -1241,14 +1368,12 @@ function BoxDetailPage({
           <strong>{boxItems.length}</strong>
         </div>
         <div>
-          <span>低库存</span>
-          <strong className={boxItems.some((item) => isLowStock(item, lowStockThreshold)) ? 'warning-text' : ''}>
-            {boxItems.filter((item) => isLowStock(item, lowStockThreshold)).length}
-          </strong>
-        </div>
-        <div>
           <span>库存</span>
           <strong>{boxItems.reduce((sum, item) => sum + item.quantity, 0)}</strong>
+        </div>
+        <div>
+          <span>累计入库</span>
+          <strong>{boxItems.reduce((sum, item) => sum + cumulativeInbound(item.id, movements), 0)}</strong>
         </div>
       </section>
 
@@ -1268,6 +1393,7 @@ function BoxDetailPage({
                 <div>
                   <strong>{item.name}</strong>
                   <span>{item.specModel || '未填规格'}</span>
+                  <small className="item-inbound">累计入库 {cumulativeInbound(item.id, movements)}</small>
                 </div>
                 <b>{quantityText(item)}</b>
               </div>
@@ -1351,6 +1477,7 @@ function BoxDetailPage({
         <StockDialog
           item={stockAction.item}
           type={stockAction.type}
+          totalInbound={cumulativeInbound(stockAction.item.id, movements)}
           onCancel={() => setStockAction(undefined)}
           onSubmit={async (quantity, input) => {
             try {
@@ -1709,10 +1836,13 @@ function ToolsPage({
       });
       if (result.method === 'cancelled') {
         showToast({ type: 'error', message: '已取消导出' });
-      } else if (result.method === 'download') {
-        showToast({ type: 'success', message: 'Excel 已生成，请查看浏览器下载记录' });
       } else {
-        showToast({ type: 'success', message: 'Excel 已生成，可在系统弹窗中保存或分享' });
+        await api.post('/audit', { action: 'export.boxes', detail: `导出 ${selected.size} 个箱子的明细表` }).catch(() => undefined);
+        if (result.method === 'download') {
+          showToast({ type: 'success', message: 'Excel 已生成，请查看浏览器下载记录' });
+        } else {
+          showToast({ type: 'success', message: 'Excel 已生成，可在系统弹窗中保存或分享' });
+        }
       }
     } catch (error) {
       showToast({ type: 'error', message: error instanceof Error ? error.message : 'Excel 导出失败' });
@@ -2146,28 +2276,36 @@ function MovementHistoryPanel({
 }) {
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
-  const [boxId, setBoxId] = useState('');
-  const [teamName, setTeamName] = useState('');
+  const [boxIds, setBoxIds] = useState<Set<string>>(new Set());
+  const [teamNames, setTeamNames] = useState<Set<string>>(new Set());
   const [editingMovement, setEditingMovement] = useState<StockMovement>();
   const teams = useMemo(
     () => Array.from(new Set(movements.map((movement) => movement.teamName).filter(Boolean) as string[])),
     [movements],
   );
+  const hasFilter = Boolean(fromDate || toDate || boxIds.size || teamNames.size);
   const filteredMovements = useMemo(() => {
     return movements.filter((movement) => {
       const date = movement.createdAt.slice(0, 10);
       const fromMatched = !fromDate || date >= fromDate;
       const toMatched = !toDate || date <= toDate;
-      const boxMatched = !boxId || movement.boxId === boxId;
-      const teamMatched = !teamName || movement.teamName === teamName;
+      const boxMatched = boxIds.size === 0 || boxIds.has(movement.boxId);
+      const teamMatched = teamNames.size === 0 || teamNames.has(movement.teamName ?? '');
       return fromMatched && toMatched && boxMatched && teamMatched;
     });
-  }, [boxId, fromDate, movements, teamName, toDate]);
+  }, [boxIds, fromDate, movements, teamNames, toDate]);
+  const toggleInSet = <T,>(setState: React.Dispatch<React.SetStateAction<Set<T>>>, value: T) =>
+    setState((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
   const filterSummary = {
     fromDate,
     toDate,
-    boxName: boxes.find((box) => box.id === boxId)?.name,
-    teamName,
+    boxName: boxIds.size ? boxes.filter((box) => boxIds.has(box.id)).map((box) => box.name).join('、') : undefined,
+    teamName: teamNames.size ? Array.from(teamNames).join('、') : undefined,
   };
   const handleExportMovements = async (scope: 'filtered' | 'all') => {
     const selectedMovements = scope === 'filtered' ? filteredMovements : movements;
@@ -2180,6 +2318,7 @@ function MovementHistoryPanel({
         fileName: defaultMovementExportFileName(scope === 'filtered' ? '筛选流水' : '全部流水'),
       });
       if (result.method !== 'cancelled') {
+        await api.post('/audit', { action: 'export.movements', detail: `导出${scope === 'filtered' ? '筛选' : '全部'}流水 ${selectedMovements.length} 条` }).catch(() => undefined);
         showToast({ type: 'success', message: scope === 'filtered' ? '筛选流水已导出' : '全部流水已导出' });
       }
     } catch (error) {
@@ -2205,35 +2344,49 @@ function MovementHistoryPanel({
           结束
           <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} />
         </label>
-        <label>
-          箱子
-          <select value={boxId} onChange={(event) => setBoxId(event.target.value)}>
-            <option value="">全部</option>
-            {boxes.map((box) => (
-              <option value={box.id} key={box.id}>
-                {box.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          班组
-          <select value={teamName} onChange={(event) => setTeamName(event.target.value)}>
-            <option value="">全部</option>
-            {teams.map((team) => (
-              <option value={team} key={team}>
-                {team}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
-      {(fromDate || toDate || boxId || teamName) && (
+      <div className="filter-group">
+        <div className="filter-group-head">
+          <span>箱子{boxIds.size > 0 ? `（已选 ${boxIds.size}）` : '（不选=全部）'}</span>
+          {boxIds.size > 0 && <button onClick={() => setBoxIds(new Set())}>清空</button>}
+        </div>
+        <div className="filter-chips">
+          {boxes.map((box) => (
+            <button
+              key={box.id}
+              className={`filter-chip${boxIds.has(box.id) ? ' active' : ''}`}
+              onClick={() => toggleInSet(setBoxIds, box.id)}
+            >
+              {box.name}
+            </button>
+          ))}
+        </div>
+      </div>
+      {teams.length > 0 && (
+        <div className="filter-group">
+          <div className="filter-group-head">
+            <span>班组{teamNames.size > 0 ? `（已选 ${teamNames.size}）` : '（不选=全部）'}</span>
+            {teamNames.size > 0 && <button onClick={() => setTeamNames(new Set())}>清空</button>}
+          </div>
+          <div className="filter-chips">
+            {teams.map((team) => (
+              <button
+                key={team}
+                className={`filter-chip${teamNames.has(team) ? ' active' : ''}`}
+                onClick={() => toggleInSet(setTeamNames, team)}
+              >
+                {team}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {hasFilter && (
         <button className="ghost full" onClick={() => {
           setFromDate('');
           setToDate('');
-          setBoxId('');
-          setTeamName('');
+          setBoxIds(new Set());
+          setTeamNames(new Set());
         }}>
           清除筛选
         </button>
@@ -2537,7 +2690,6 @@ function ItemFormDialog({
     specModel?: string;
     quantity: number;
     unit?: string;
-    lowStockThreshold?: number;
     imageDataUrl?: string;
     note?: string;
     createdAt?: string;
@@ -2547,7 +2699,6 @@ function ItemFormDialog({
     specModel?: string;
     quantity: number;
     unit?: string;
-    lowStockThreshold?: number;
     imageDataUrl?: string;
     note?: string;
     createdAt?: string;
@@ -2557,26 +2708,23 @@ function ItemFormDialog({
   const [specModel, setSpecModel] = useState(item?.specModel ?? '');
   const [quantity, setQuantity] = useState(item ? String(item.quantity) : '');
   const [unit, setUnit] = useState(item?.unit ?? '');
-  const [lowStockThreshold, setLowStockThreshold] = useState(String(item?.lowStockThreshold ?? DEFAULT_LOW_STOCK_THRESHOLD));
   const [imageDataUrl, setImageDataUrl] = useState(item?.imageDataUrl ?? '');
   const [note, setNote] = useState(item?.note ?? '');
   const [createdAt, setCreatedAt] = useState(toDatetimeLocal(item?.createdAt));
   const [saving, setSaving] = useState(false);
   const numericQuantity = quantity.trim() === '' ? Number.NaN : Number(quantity);
-  const numericLowStockThreshold = Number(lowStockThreshold);
 
   const buildInput = () => ({
     name,
     specModel,
     quantity: numericQuantity,
     unit,
-    lowStockThreshold: Number.isFinite(numericLowStockThreshold) && numericLowStockThreshold >= 0 ? numericLowStockThreshold : DEFAULT_LOW_STOCK_THRESHOLD,
     imageDataUrl,
     note,
     createdAt: item ? undefined : fromDatetimeLocal(createdAt),
   });
 
-  const isValid = name.trim() && Number.isFinite(numericQuantity) && numericQuantity >= 0 && numericLowStockThreshold >= 0;
+  const isValid = name.trim() && Number.isFinite(numericQuantity) && numericQuantity >= 0;
 
   const handleContinue = async () => {
     if (!isValid || !onContinue) return;
@@ -2614,7 +2762,7 @@ function ItemFormDialog({
           规格型号
           <input value={specModel} onChange={(event) => setSpecModel(event.target.value)} placeholder="规格" />
         </label>
-        <div className="field-grid">
+        <div className="field-grid two">
           <label className="field">
             {item ? '当前数量' : '入库数量'}
             <input inputMode="decimal" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
@@ -2622,10 +2770,6 @@ function ItemFormDialog({
           <label className="field">
             单位
             <input value={unit} onChange={(event) => setUnit(event.target.value)} placeholder="个" />
-          </label>
-          <label className="field threshold-field">
-            低库存
-            <input inputMode="decimal" value={lowStockThreshold} onChange={(event) => setLowStockThreshold(event.target.value)} placeholder="2" />
           </label>
         </div>
         <div className="chip-row">
@@ -2671,11 +2815,13 @@ function ItemFormDialog({
 function StockDialog({
   item,
   type,
+  totalInbound,
   onCancel,
   onSubmit,
 }: {
   item: Item;
   type: 'in' | 'out';
+  totalInbound: number;
   onCancel: () => void;
   onSubmit: (quantity: number, input: { note?: string; teamName?: string; createdAt: string; imageDataUrl?: string }) => Promise<void>;
 }) {
@@ -2743,6 +2889,7 @@ function StockDialog({
         </label>
         <div className="stock-preview">
           <span>当前库存：{quantityText(item)}</span>
+          <span>累计入库：{totalInbound + (type === 'in' && Number.isFinite(value) && value > 0 ? value : 0)}</span>
           <strong className={after < 0 ? 'danger-text' : ''}>操作后：{Number.isFinite(after) ? after : item.quantity}</strong>
         </div>
         {after < 0 && <p className="danger-text">出库数量不能超过当前库存。</p>}

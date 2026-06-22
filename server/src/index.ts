@@ -2,13 +2,16 @@ import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte } from 'drizzle-orm';
 import { z } from 'zod';
 import { createSession, createShareToken, hashPassword, requireAdmin, requireAuth, revokeRefreshToken, sha256, verifyPassword } from './auth.js';
 import { db, rawPool } from './db.js';
-import { boxes, items, loginLogs, movements, sessions, syncOperations, users } from './schema.js';
+import { auditLogs, boxes, items, loginLogs, movements, sessions, syncOperations, users } from './schema.js';
+import type { FastifyRequest } from 'fastify';
 
-const app = Fastify({ logger: true, trustProxy: true, bodyLimit: 50 * 1024 * 1024 });
+// 请求体上限：含 base64 图片的全量快照导入/恢复需要较大空间
+const MAX_BODY_BYTES = 50 * 1024 * 1024;
+const app = Fastify({ logger: true, trustProxy: true, bodyLimit: MAX_BODY_BYTES });
 await app.register(cors, { origin: process.env.CORS_ORIGIN === '*' ? true : process.env.CORS_ORIGIN });
 await app.register(jwt, { secret: process.env.JWT_SECRET! });
 
@@ -105,13 +108,50 @@ await rawPool.query(`
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
   CREATE INDEX IF NOT EXISTS login_logs_created_at_idx ON login_logs(created_at DESC);
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    username TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target_type TEXT,
+    target_id TEXT,
+    detail TEXT,
+    ip TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS audit_logs_created_at_idx ON audit_logs(created_at DESC);
+  CREATE INDEX IF NOT EXISTS audit_logs_user_id_idx ON audit_logs(user_id);
 `);
+
+// 记录一条操作审计日志。best-effort：即使写入失败也不影响主操作。
+const recordAudit = async (
+  request: FastifyRequest,
+  entry: { action: string; targetType?: string; targetId?: string; detail?: string },
+) => {
+  try {
+    await db.insert(auditLogs).values({
+      userId: request.user?.id,
+      username: request.user?.username ?? '未知',
+      action: entry.action,
+      targetType: entry.targetType,
+      targetId: entry.targetId,
+      detail: entry.detail,
+      ip: request.ip,
+    });
+  } catch (err) {
+    app.log.error({ err }, 'audit log write failed');
+  }
+};
+
+// 允许前端上报的客户端侧操作（如导出在本地生成，服务端无法感知）
+const CLIENT_AUDIT_ACTIONS = new Set(['export.boxes', 'export.movements', 'export.audit']);
 
 // Create admin account if missing
 {
   const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.username, 'admin'));
   if (!existing) {
-    await db.insert(users).values({ username: 'admin', passwordHash: await hashPassword('admin888'), isAdmin: true });
+    const initialPassword = process.env.ADMIN_PASSWORD?.trim() || 'admin888';
+    await db.insert(users).values({ username: 'admin', passwordHash: await hashPassword(initialPassword), isAdmin: true });
   }
 }
 
@@ -172,20 +212,26 @@ app.post('/auth/profile/update', { preHandler: requireAuth }, async (request, re
     updatedAt: new Date(),
   }).where(eq(users.id, user.id));
   await db.delete(sessions).where(eq(sessions.userId, user.id));
+  const changed = [input.username && username !== user.username ? '账号名' : '', input.newPassword ? '密码' : ''].filter(Boolean).join('、');
+  await recordAudit(request, { action: 'profile.update', targetType: 'user', targetId: user.id, detail: `修改账号资料${changed ? `（${changed}）` : ''}` });
   return createSession(app, { id: user.id, username, isAdmin: user.isAdmin });
 });
 
 app.post('/import', { preHandler: requireAuth }, async (request) => {
   const input = snapshotInput.parse(request.body);
-  return db.transaction((tx) => insertSnapshot(tx, request.user.id, input));
+  const result = await db.transaction((tx) => insertSnapshot(tx, request.user.id, input));
+  await recordAudit(request, { action: 'import', detail: `导入 ${result.boxes} 个箱子、${result.items} 个物品` });
+  return result;
 });
 
 app.post('/restore', { preHandler: requireAuth }, async (request) => {
   const input = snapshotInput.parse(request.body);
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     await tx.delete(boxes).where(eq(boxes.ownerId, request.user.id));
     return insertSnapshot(tx, request.user.id, input);
   });
+  await recordAudit(request, { action: 'restore', detail: `恢复备份：${result.boxes} 个箱子、${result.items} 个物品` });
+  return result;
 });
 
 app.get('/data', { preHandler: requireAuth }, async (request) => {
@@ -216,6 +262,7 @@ app.post('/boxes', { preHandler: requireAuth }, async (request) => {
     createdAt: now,
     updatedAt: now,
   }).returning();
+  await recordAudit(request, { action: 'box.create', targetType: 'box', targetId: box!.id, detail: `新建箱子「${box!.name}」` });
   return box;
 });
 
@@ -225,19 +272,23 @@ app.post('/boxes/:id/update', { preHandler: requireAuth }, async (request, reply
   const input = boxInput.partial().parse(request.body);
   const { createdAt: _createdAt, id: _inputId, ...changes } = input;
   const [box] = await db.update(boxes).set({ ...changes, updatedAt: new Date() }).where(eq(boxes.id, id)).returning();
+  await recordAudit(request, { action: 'box.update', targetType: 'box', targetId: id, detail: `编辑箱子「${box!.name}」` });
   return box;
 });
 
 app.post('/boxes/:id/delete', { preHandler: requireAuth }, async (request, reply) => {
   const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-  if (!(await ownBox(request.user.id, id))) return reply.status(404).send({ message: '箱子不存在' });
+  const box = await ownBox(request.user.id, id);
+  if (!box) return reply.status(404).send({ message: '箱子不存在' });
   await db.delete(boxes).where(eq(boxes.id, id));
+  await recordAudit(request, { action: 'box.delete', targetType: 'box', targetId: id, detail: `删除箱子「${box.name}」` });
   return { ok: true };
 });
 
 app.post('/items', { preHandler: requireAuth }, async (request, reply) => {
   const input = itemInput.parse(request.body);
-  if (!(await ownBox(request.user.id, input.boxId))) return reply.status(404).send({ message: '箱子不存在' });
+  const box = await ownBox(request.user.id, input.boxId);
+  if (!box) return reply.status(404).send({ message: '箱子不存在' });
   const now = input.createdAt ? new Date(input.createdAt) : new Date();
   const { createdAt: _createdAt, id: inputId, ...itemValues } = input;
   const [item] = await db.insert(items).values({ ...itemValues, id: inputId ?? crypto.randomUUID(), createdAt: now, updatedAt: now }).returning();
@@ -246,6 +297,7 @@ app.post('/items', { preHandler: requireAuth }, async (request, reply) => {
     beforeQuantity: 0, afterQuantity: input.quantity, note: '初始库存', createdAt: now,
   });
   await db.update(boxes).set({ updatedAt: new Date() }).where(eq(boxes.id, input.boxId));
+  await recordAudit(request, { action: 'item.create', targetType: 'item', targetId: item!.id, detail: `在「${box.name}」新增物品「${item!.name}」，初始数量 ${input.quantity}` });
   return item;
 });
 
@@ -272,6 +324,9 @@ app.post('/items/:id/update', { preHandler: requireAuth }, async (request, reply
     await tx.update(boxes).set({ updatedAt: new Date() }).where(eq(boxes.id, current.boxId));
     return [updated];
   });
+  const qtyNote = input.quantity !== undefined && input.quantity !== current.quantity
+    ? `，数量 ${current.quantity}→${input.quantity}` : '';
+  await recordAudit(request, { action: 'item.update', targetType: 'item', targetId: id, detail: `编辑物品「${item!.name}」${qtyNote}` });
   return item;
 });
 
@@ -281,6 +336,7 @@ app.post('/items/:id/delete', { preHandler: requireAuth }, async (request, reply
   if (!item || !(await ownBox(request.user.id, item.boxId))) return reply.status(404).send({ message: '物品不存在' });
   await db.delete(items).where(eq(items.id, id));
   await db.update(boxes).set({ updatedAt: new Date() }).where(eq(boxes.id, item.boxId));
+  await recordAudit(request, { action: 'item.delete', targetType: 'item', targetId: id, detail: `删除物品「${item.name}」` });
   return { ok: true };
 });
 
@@ -324,6 +380,13 @@ app.post('/items/:id/movements', { preHandler: requireAuth }, async (request, re
     const result = { item: { ...item, quantity: after }, movementId };
     await client.query('INSERT INTO sync_operations(id,owner_id,result) VALUES($1,$2,$3)', [input.operationId, request.user.id, JSON.stringify(result)]);
     await client.query('COMMIT');
+    const team = input.type === 'out' && input.teamName?.trim() ? `（领取：${input.teamName.trim()}）` : '';
+    await recordAudit(request, {
+      action: input.type === 'in' ? 'stock.in' : 'stock.out',
+      targetType: 'item',
+      targetId: id,
+      detail: `「${item.name}」${input.type === 'in' ? '入库' : '出库'} ${input.quantity}${team}，结余 ${after}`,
+    });
     return result;
   } catch (error) {
     await client.query('ROLLBACK');
@@ -374,6 +437,13 @@ app.post('/movements/:id/update', { preHandler: requireAuth }, async (request, r
     await client.query('UPDATE items SET quantity=$1, updated_at=NOW() WHERE id=$2', [stock, current.item_id]);
     await client.query('UPDATE boxes SET updated_at=NOW() WHERE id=$1', [current.box_id]);
     await client.query('COMMIT');
+    const typeText = current.type === 'in' ? '入库' : current.type === 'out' ? '出库' : '调整';
+    await recordAudit(request, {
+      action: 'movement.update',
+      targetType: 'movement',
+      targetId: id,
+      detail: `编辑${typeText}流水：数量 ${current.quantity}→${input.quantity}`,
+    });
     return { ok: true };
   } catch (error) {
     await client.query('ROLLBACK');
@@ -386,14 +456,29 @@ app.post('/movements/:id/update', { preHandler: requireAuth }, async (request, r
 app.post('/boxes/:id/movements/exclude', { preHandler: requireAuth }, async (request, reply) => {
   const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
   const { teamNames } = z.object({ teamNames: z.array(z.string()).min(1) }).parse(request.body);
-  if (!(await ownBox(request.user.id, id))) return reply.status(404).send({ message: '箱子不存在' });
+  const box = await ownBox(request.user.id, id);
+  if (!box) return reply.status(404).send({ message: '箱子不存在' });
   const result = await rawPool.query(
     `UPDATE movements SET export_excluded=TRUE
      WHERE box_id=$1 AND type='out' AND export_excluded=FALSE
        AND COALESCE(NULLIF(TRIM(team_name), ''), '未填班组') = ANY($2::text[])`,
     [id, teamNames],
   );
+  await recordAudit(request, {
+    action: 'movement.exclude',
+    targetType: 'box',
+    targetId: id,
+    detail: `「${box.name}」清除 ${result.rowCount ?? 0} 条领取记录（班组：${teamNames.join('、')}）`,
+  });
   return { count: result.rowCount ?? 0 };
+});
+
+// 前端上报客户端侧操作（导出在本地生成，服务端无法感知）
+app.post('/audit', { preHandler: requireAuth }, async (request, reply) => {
+  const input = z.object({ action: z.string(), detail: z.string().max(500).optional() }).parse(request.body);
+  if (!CLIENT_AUDIT_ACTIONS.has(input.action)) return reply.status(400).send({ message: '不支持的操作类型' });
+  await recordAudit(request, { action: input.action, detail: input.detail });
+  return { ok: true };
 });
 
 app.get('/shared/boxes/:id', async (request, reply) => {
@@ -417,16 +502,48 @@ app.get('/admin/users', { preHandler: requireAdmin }, async () => {
 app.post('/admin/users/:id/reset-password', { preHandler: requireAdmin }, async (request, reply) => {
   const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
   const { newPassword } = z.object({ newPassword: z.string().min(6).max(128) }).parse(request.body);
-  const [user] = await db.select({ id: users.id }).from(users).where(and(eq(users.id, id), eq(users.isAdmin, false)));
+  const [user] = await db.select({ id: users.id, username: users.username }).from(users).where(and(eq(users.id, id), eq(users.isAdmin, false)));
   if (!user) return reply.status(404).send({ message: '用户不存在' });
   await db.update(users).set({ passwordHash: await hashPassword(newPassword), updatedAt: new Date() }).where(eq(users.id, id));
   await db.delete(sessions).where(eq(sessions.userId, id));
+  await recordAudit(request, { action: 'admin.reset_password', targetType: 'user', targetId: id, detail: `重置用户「${user.username}」的密码` });
+  return { ok: true };
+});
+
+app.post('/admin/users/:id/delete', { preHandler: requireAdmin }, async (request, reply) => {
+  const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+  const [user] = await db.select({ id: users.id, username: users.username }).from(users).where(and(eq(users.id, id), eq(users.isAdmin, false)));
+  if (!user) return reply.status(404).send({ message: '用户不存在' });
+  // 级联删除该用户的箱子/物品/流水/会话（schema 中已配置 onDelete cascade）
+  await db.delete(users).where(eq(users.id, id));
+  await recordAudit(request, { action: 'admin.delete_user', targetType: 'user', targetId: id, detail: `删除用户「${user.username}」及其全部数据` });
   return { ok: true };
 });
 
 app.get('/admin/login-logs', { preHandler: requireAdmin }, async (request) => {
   const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(500).default(200) }).parse(request.query);
   return db.select().from(loginLogs).orderBy(desc(loginLogs.createdAt)).limit(limit);
+});
+
+app.get('/admin/audit-logs', { preHandler: requireAdmin }, async (request) => {
+  const q = z.object({
+    userId: z.string().uuid().optional(),
+    action: z.string().optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(2000).default(500),
+  }).parse(request.query);
+  const conditions = [
+    q.userId ? eq(auditLogs.userId, q.userId) : undefined,
+    q.action ? eq(auditLogs.action, q.action) : undefined,
+    q.fromDate ? gte(auditLogs.createdAt, new Date(`${q.fromDate}T00:00:00`)) : undefined,
+    q.toDate ? lte(auditLogs.createdAt, new Date(`${q.toDate}T23:59:59.999`)) : undefined,
+  ].filter(Boolean) as ReturnType<typeof eq>[];
+  const rows = await db.select().from(auditLogs)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(auditLogs.createdAt))
+    .limit(q.limit);
+  return rows.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() }));
 });
 
 app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {

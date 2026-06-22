@@ -3,6 +3,8 @@ import { getSession, setSession } from './auth';
 
 export const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
 
+const REQUEST_TIMEOUT_MS = 25000;
+
 export class ApiError extends Error {
   readonly status: number;
 
@@ -15,7 +17,7 @@ export class ApiError extends Error {
 const request = async <T>(path: string, init: RequestInit = {}, retry = true): Promise<T> => {
   const session = getSession();
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 25000);
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let response: Response;
   try {
     const hasBody = init.body !== undefined && init.body !== null;
